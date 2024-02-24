@@ -32,7 +32,7 @@ jobs:
           make -j`nproc` deb
           mkdir dist && mv ../*.deb ./dist/
       - name: Upload deb
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bcachefs-tools-deb_${{ matrix.os }}
           path: dist
@@ -57,7 +57,7 @@ jobs:
           make -j`nproc` rpm
           mv ${HOME}/rpmbuild ./
       - name: Upload rpm
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bcachefs-tools-rpm
           path: rpmbuild
