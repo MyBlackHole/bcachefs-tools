@@ -625,6 +625,7 @@ struct bch_sb_field_members_v1 {
 
 struct bch_sb_field_members_v2 {
 	struct bch_sb_field	field;
+    // 单个成员条目的内存大小
 	__le16			member_bytes; //size of single member entry
 	u8			pad[6];
 	struct bch_member	_members[];
@@ -897,6 +898,7 @@ struct bch_sb_layout {
 	__uuid_t		magic;	/* bcachefs superblock UUID */
 	__u8			layout_type;
 	__u8			sb_max_size_bits; /* base 2 of 512 byte sectors */
+    // 超级块数量
 	__u8			nr_superblocks;
 	__u8			pad[5];
 	__le64			sb_offset[61];
@@ -955,6 +957,7 @@ struct bch_sb {
 	__le64			features[2];
 	__le64			compat[2];
 
+    // 布局
 	struct bch_sb_layout	layout;
 
 	struct bch_sb_field	start[0];

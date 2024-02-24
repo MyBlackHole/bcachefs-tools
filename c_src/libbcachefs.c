@@ -31,6 +31,7 @@
 
 #define NSEC_PER_SEC	1000000000L
 
+// 初始化布局
 static void init_layout(struct bch_sb_layout *l,
 			unsigned block_size,
 			unsigned sb_size,
@@ -47,6 +48,7 @@ static void init_layout(struct bch_sb_layout *l,
 	l->sb_max_size_bits	= ilog2(sb_size);
 
 	/* Create two superblocks in the allowed range: */
+    /* 在允许的范围内创建两个超级块: */
 	for (i = 0; i < l->nr_superblocks; i++) {
 		if (sb_pos != BCH_SB_SECTOR)
 			sb_pos = round_up(sb_pos, block_size >> 9);
@@ -238,6 +240,7 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		       opts.label,
 		       min(strlen(opts.label), sizeof(sb.sb->label)));
 
+    // bch_sb 补充参数
 	for (opt_id = 0;
 	     opt_id < bch2_opts_nr;
 	     opt_id++) {
@@ -277,6 +280,7 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 	}
 
 	/* Disk labels*/
+    /*磁盘标签*/
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct bch_member *m;
 		int idx;
@@ -306,6 +310,7 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		parse_target(&sb, devs, nr_devs, fs_opt_strs.metadata_target));
 
 	/* Crypt: */
+    // 加密选项
 	if (opts.encrypted) {
 		struct bch_sb_field_crypt *crypt =
 			bch2_sb_field_resize(&sb, crypt, sizeof(*crypt) / sizeof(u64));
@@ -347,8 +352,10 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 
 		if (i->sb_offset == BCH_SB_SECTOR) {
 			/* Zero start of disk */
+            /* 磁盘零启动 */
 			static const char zeroes[BCH_SB_SECTOR << 9];
 
+            // 磁盘开始清零
 			xpwrite(i->bdev->bd_fd, zeroes, BCH_SB_SECTOR << 9, 0,
 				"zeroing start of disk");
 		}
@@ -371,7 +378,7 @@ void bch2_super_write(int fd, struct bch_sb *sb)
 
 		if (sb->offset == BCH_SB_SECTOR) {
 			/* Write backup layout */
-
+            /* 写入备份布局 */
 			BUG_ON(bs > 4096);
 
 			char *buf = aligned_alloc(bs, bs);

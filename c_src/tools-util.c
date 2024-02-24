@@ -51,6 +51,7 @@ char *mprintf(const char *fmt, ...)
 	return str;
 }
 
+// 读取指定偏移量的指定大小
 void xpread(int fd, void *buf, size_t count, off_t offset)
 {
 	while (count) {
