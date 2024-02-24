@@ -43,6 +43,7 @@ fn handle_c_command(args: Vec<String>, symlink_cmd: Option<&str>) -> i32 {
     let argv = argv.as_mut_ptr();
 
     // The C functions will mutate argv. It shouldn't be used after this block.
+    // C 函数将改变 argv。 不应在此块之后使用它。
     unsafe {
         match cmd.as_str() {
             "--help" => {

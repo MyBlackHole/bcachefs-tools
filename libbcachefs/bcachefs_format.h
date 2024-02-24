@@ -922,14 +922,22 @@ struct bch_sb_layout {
  */
 struct bch_sb {
 	struct bch_csum		csum;
+    // 格式化版本
 	__le16			version;
+    // 文件系统包含的最旧的元数据版本
 	__le16			version_min;
 	__le16			pad[2];
+    // 标识
 	__uuid_t		magic;
+    // 唯一标识
 	__uuid_t		uuid;
+    // 用户可见标识，可以修改
 	__uuid_t		user_uuid;
+    // 文件系统标识
 	__u8			label[BCH_SB_LABEL_SIZE];
+    // 写入此结构的偏移量
 	__le64			offset;
+    // 标识最近的超级块
 	__le64			seq;
 
 	__le16			block_size;
@@ -943,6 +951,7 @@ struct bch_sb {
 
 	__le64			flags[7];
 	__le64			write_time;
+    // 启用不兼容的功能
 	__le64			features[2];
 	__le64			compat[2];
 

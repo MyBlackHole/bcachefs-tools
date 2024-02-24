@@ -61,11 +61,13 @@ static void init_layout(struct bch_sb_layout *l,
 }
 
 /* minimum size filesystem we can create, given a bucket size: */
+/* 在给定存储桶大小的情况下，我们可以创建的最小文件系统大小：*/
 static u64 min_size(unsigned bucket_size)
 {
 	return BCH_MIN_NR_NBUCKETS * bucket_size;
 }
 
+// 计算桶大小
 u64 bch2_pick_bucket_size(struct bch_opts opts, struct dev_opts *dev)
 {
 	u64 bucket_size;
@@ -75,14 +77,17 @@ u64 bch2_pick_bucket_size(struct bch_opts opts, struct dev_opts *dev)
 		    dev->path, dev->size, min_size(opts.block_size));
 
 	/* Bucket size must be >= block size: */
+    // 桶大小必须大于等于块大小
 	bucket_size = opts.block_size;
 
 	/* Bucket size must be >= btree node size: */
+    // 桶大小必须大于等于 btree 节点大小
 	if (opt_defined(opts, btree_node_size))
 		bucket_size = max_t(unsigned, bucket_size,
 					 opts.btree_node_size);
 
 	/* Want a bucket size of at least 128k, if possible: */
+    /* 如果可能的话，希望桶大小至少为 128k： */
 	bucket_size = max(bucket_size, 128ULL << 10);
 
 	if (dev->size >= min_size(bucket_size)) {
@@ -92,8 +97,11 @@ u64 bch2_pick_bucket_size(struct bch_opts opts, struct dev_opts *dev)
 		scale = rounddown_pow_of_two(scale);
 
 		/* max bucket size 1 mb */
+        /* 最大存储桶大小 1 mb */
 		bucket_size = min(bucket_size * scale, 1ULL << 20);
 	} else {
+        // 桶大小太大, 不够空间
+        // 减小桶大小
 		do {
 			bucket_size /= 2;
 		} while (dev->size < min_size(bucket_size));
@@ -160,45 +168,57 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		max_dev_block_size = max(max_dev_block_size, get_blocksize(i->bdev->bd_fd));
 
 	/* calculate block size: */
+    // 计算块大小
 	if (!opt_defined(fs_opts, block_size)) {
+        // 设置块大小
 		opt_set(fs_opts, block_size, max_dev_block_size);
 	} else if (fs_opts.block_size < max_dev_block_size)
 		die("blocksize too small: %u, must be greater than device blocksize %u",
 		    fs_opts.block_size, max_dev_block_size);
 
 	/* get device size, if it wasn't specified: */
+    /* 获取设备大小(如果未指定)： */
 	for (i = devs; i < devs + nr_devs; i++)
 		if (!i->size)
 			i->size = get_size(i->bdev->bd_fd);
 
 	/* calculate bucket sizes: */
+    // 计算桶大小
 	for (i = devs; i < devs + nr_devs; i++)
 		min_bucket_size = min(min_bucket_size,
 			i->bucket_size ?: bch2_pick_bucket_size(fs_opts, i));
 
+    // 设置桶大小
 	for (i = devs; i < devs + nr_devs; i++)
 		if (!i->bucket_size)
 			i->bucket_size = min_bucket_size;
 
+    // 计算桶数量
 	for (i = devs; i < devs + nr_devs; i++) {
 		i->nbuckets = i->size / i->bucket_size;
+        // 校验桶数量
 		bch2_check_bucket_size(fs_opts, i);
 	}
 
 	/* calculate btree node size: */
+    /* 计算btree节点大小: */
 	if (!opt_defined(fs_opts, btree_node_size)) {
 		/* 256k default btree node size */
+        /* 设置 256k 默认 btree 节点大小 */
 		opt_set(fs_opts, btree_node_size, 256 << 10);
 
 		for (i = devs; i < devs + nr_devs; i++)
+            // 设置最小值大小
 			fs_opts.btree_node_size =
 				min_t(unsigned, fs_opts.btree_node_size,
 				      i->bucket_size);
 	}
 
 	if (uuid_is_null(opts.uuid.b))
+        // 设置 uuid
 		uuid_generate(opts.uuid.b);
 
+    // 初始化内存分配
 	if (bch2_sb_realloc(&sb, 0))
 		die("insufficient memory");
 

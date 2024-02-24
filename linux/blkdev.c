@@ -126,6 +126,7 @@ int blkdev_issue_zeroout(struct block_device *bdev,
 	BUG();
 }
 
+// 获取逻辑块大小
 unsigned bdev_logical_block_size(struct block_device *bdev)
 {
 	struct stat statbuf;

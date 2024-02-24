@@ -157,6 +157,7 @@ ssize_t read_string_list_or_die(const char *opt, const char * const list[],
 }
 
 /* Returns size of file or block device: */
+/* 返回文件或块设备的大小: */
 u64 get_size(int fd)
 {
 	struct stat statbuf = xfstat(fd);
@@ -170,6 +171,7 @@ u64 get_size(int fd)
 }
 
 /* Returns blocksize, in bytes: */
+/* 返回块大小，以字节为单位： */
 unsigned get_blocksize(int fd)
 {
 	struct stat statbuf = xfstat(fd);
@@ -183,6 +185,7 @@ unsigned get_blocksize(int fd)
 }
 
 /* Open a block device, do magic blkid stuff to probe for existing filesystems: */
+/* 打开块设备，执行神奇的 blkid 操作来探测现有文件系统：*/
 int open_for_format(struct dev_opts *dev, bool force)
 {
 	blkid_probe pr;
