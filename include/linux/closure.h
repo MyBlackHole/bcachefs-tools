@@ -232,6 +232,7 @@ static inline void closure_set_stopped(struct closure *cl)
 	atomic_sub(CLOSURE_RUNNING, &cl->remaining);
 }
 
+// 设置闭包函数与工作队列
 static inline void set_closure_fn(struct closure *cl, closure_fn *fn,
 				  struct workqueue_struct *wq)
 {
@@ -240,6 +241,7 @@ static inline void set_closure_fn(struct closure *cl, closure_fn *fn,
 	cl->wq = wq;
 }
 
+// 添加到工作队列(异步)或者直接执行(同步)
 static inline void closure_queue(struct closure *cl)
 {
 	struct workqueue_struct *wq = cl->wq;
@@ -260,6 +262,7 @@ static inline void closure_queue(struct closure *cl)
 /**
  * closure_get - increment a closure's refcount
  */
+// ++
 static inline void closure_get(struct closure *cl)
 {
 	cl->closure_get_happened = true;
@@ -278,6 +281,8 @@ static inline void closure_get(struct closure *cl)
  * @parent:	parent of the new closure. cl will take a refcount on it for its
  *		lifetime; may be NULL.
  */
+// 初始化闭包，将引用计数设置为 1
+// parent: 新闭包的父级
 static inline void closure_init(struct closure *cl, struct closure *parent)
 {
 	cl->fn = NULL;
@@ -285,6 +290,7 @@ static inline void closure_init(struct closure *cl, struct closure *parent)
 	if (parent)
 		closure_get(parent);
 
+    // 设置引用计数 1
 	atomic_set(&cl->remaining, CLOSURE_REMAINING_INITIALIZER);
 	cl->closure_get_happened = false;
 
@@ -353,6 +359,7 @@ do {									\
  * thus it's not safe to touch anything protected by @cl after a
  * continue_at_nobarrier().
  */
+// continue_at_nobarrier - 无屏障跳转到另一个函数
 #define continue_at_nobarrier(_cl, _fn, _wq)				\
 do {									\
 	set_closure_fn(_cl, _fn, _wq);					\
@@ -382,6 +389,7 @@ do {									\
  * asynchronously out of a new closure - @parent will then wait for @cl to
  * finish.
  */
+// closure_call - 在新的、未初始化的闭包中执行@fn
 static inline void closure_call(struct closure *cl, closure_fn fn,
 				struct workqueue_struct *wq,
 				struct closure *parent)

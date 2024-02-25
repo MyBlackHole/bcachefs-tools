@@ -37,6 +37,7 @@ static bool set_work_pending(struct work_struct *work)
 	return !test_and_set_bit(WORK_PENDING_BIT, work_data_bits(work));
 }
 
+// 工作添加到待处理队列
 static void __queue_work(struct workqueue_struct *wq,
 			 struct work_struct *work)
 {

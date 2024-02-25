@@ -692,6 +692,7 @@ void memcpy_to_bio(struct bio *dst, struct bvec_iter dst_iter, const void *src)
 	}
 }
 
+// 移动 src 到 dst
 void memcpy_from_bio(void *dst, struct bio *src, struct bvec_iter src_iter)
 {
 	struct bio_vec bv;

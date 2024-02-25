@@ -21,6 +21,7 @@ void __put_task_struct(struct task_struct *t)
 }
 
 /* returns true if process was woken up, false if it was already running */
+/* 如果进程被唤醒则返回 true，如果进程已经运行则返回 false */
 int wake_up_process(struct task_struct *p)
 {
 	int ret = p->state != TASK_RUNNING;

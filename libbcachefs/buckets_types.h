@@ -76,6 +76,7 @@ struct bch_fs_usage_short {
 /*
  * A reservation for space on disk:
  */
+// 磁盘空间预留：
 struct disk_reservation {
 	u64			sectors;
 	u32			gen;

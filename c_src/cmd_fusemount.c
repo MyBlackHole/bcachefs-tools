@@ -35,6 +35,7 @@
 #define QSTR(n) { { { .len = strlen(n) } }, .name = n }
 
 /* used by write_aligned function for waiting on bch2_write closure */
+/* write_aligned 函数用于等待 bch2_write 闭包 */
 struct write_aligned_op_t {
         struct closure cl;
 
@@ -408,17 +409,24 @@ static void bcachefs_fuse_write_endio(struct bch_write_op *op)
        closure_put(&w->cl);
 }
 
-
+/*
+ * start <= actually start < actually end <= end
+ */
 struct fuse_align_io {
+    // 对齐开始位置
 	off_t		start;
+    // 实际偏移量与 start 差值
 	size_t		pad_start;
 	off_t		end;
 	size_t		pad_end;
+    // 对齐后开始结束大小, 大于等于实际大小
 	size_t		size;
 };
 
 /* Handle unaligned start and end */
 /* TODO: align to block_bytes, sector size, or page size? */
+/* 处理未对齐的开始和结束 */
+/* TODO：与 block_bytes、扇区大小或页大小对齐？ */
 static struct fuse_align_io align_io(const struct bch_fs *c, size_t size,
 				     off_t offset)
 {
@@ -426,10 +434,12 @@ static struct fuse_align_io align_io(const struct bch_fs *c, size_t size,
 
 	BUG_ON(offset < 0);
 
+    // 向下舍入
 	align.start = round_down(offset, block_bytes(c));
 	align.pad_start = offset - align.start;
 
 	off_t end = offset + size;
+    // 向上舍入
 	align.end = round_up(end, block_bytes(c));
 	align.pad_end = align.end - end;
 
@@ -458,6 +468,7 @@ static size_t align_fix_up_bytes(const struct fuse_align_io *align,
 /*
  * Read aligned data.
  */
+// 读取对齐数据
 static int read_aligned(struct bch_fs *c, subvol_inum inum, size_t aligned_size,
 			off_t aligned_offset, void *buf)
 {
@@ -531,6 +542,7 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t ino,
 	free(buf);
 }
 
+// 更新 inode 时间
 static int inode_update_times(struct bch_fs *c, subvol_inum inum)
 {
 	struct btree_trans *trans;
@@ -602,8 +614,10 @@ static int write_aligned(struct bch_fs *c, subvol_inum inum,
 		return -ENOSPC;
 	}
 
+    // cl ++
 	closure_get(&w.cl);
 
+    // 执行写
 	closure_call(&op->cl, bch2_write, NULL, NULL);
 
 	closure_sync(&w.cl);
@@ -620,6 +634,7 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t ino,
 				struct fuse_file_info *fi)
 {
 	subvol_inum inum = map_root_ino(ino);
+    // 从请求获取用户(似有)数据
 	struct bch_fs *c	= fuse_req_userdata(req);
 	struct bch_io_opts	io_opts;
 	size_t			aligned_written;
@@ -628,7 +643,9 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t ino,
 	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_write(%llu, %zd, %lld)\n",
 		 inum, size, offset);
 
+    // 对齐 io
 	struct fuse_align_io align = align_io(c, size, offset);
+    // 对齐(4k)分配内存
 	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
 	BUG_ON(!aligned_buf);
 
@@ -638,9 +655,13 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t ino,
 	}
 
 	/* Realign the data and read in start and end, if needed */
+    /* 重新对齐数据并读取开始和结束（如果需要） */
 
 	/* Read partial start data. */
+    /* 读取部分开始数据。 */
+    // 目的是填充左边界可能对齐多余部分
 	if (align.pad_start) {
+        // 清零一个文件系统的块大小
 		memset(aligned_buf, 0, block_bytes(c));
 
 		ret = read_aligned(c, inum, block_bytes(c), align.start,
@@ -653,6 +674,9 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t ino,
 	 * Read partial end data. If the whole write fits in one block, the
 	 * start data and the end data are the same so this isn't needed.
 	 */
+    // 读取部分结束数据。
+    // 如果整个写入适合一个块，则起始数据和结束数据相同，因此不需要这样做。
+    // 目的是填充右边界可能对齐多余部分
 	if (align.pad_end &&
 	    !(align.pad_start && align.size == block_bytes(c))) {
 		off_t partial_end_start = align.end - block_bytes(c);
@@ -667,14 +691,17 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t ino,
 	}
 
 	/* Overlay what we want to write. */
+    /* 覆盖我们想要写的内容。 */
 	memcpy(aligned_buf + align.pad_start, buf, size);
 
 	/* Actually write. */
+    // 实际写
 	ret = write_aligned(c, inum, io_opts, aligned_buf,
 			    align.size, align.start,
 			    offset + size, &aligned_written);
 
 	/* Figure out how many unaligned bytes were written. */
+    /* 计算出写入了多少未对齐的字节。 */
 	size_t written = align_fix_up_bytes(&align, aligned_written);
 	BUG_ON(written > size);
 

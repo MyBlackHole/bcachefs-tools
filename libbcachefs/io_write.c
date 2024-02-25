@@ -500,6 +500,7 @@ static noinline int bch2_write_drop_io_error_ptrs(struct bch_write_op *op)
  * __bch2_write_index - after a write, update index to point to new data
  * @op:		bch_write_op to process
  */
+// __bch2_write_index - 写入后，更新索引以指向新数据
 static void __bch2_write_index(struct bch_write_op *op)
 {
 	struct bch_fs *c = op->c;
@@ -540,6 +541,7 @@ static void __bch2_write_index(struct bch_write_op *op)
 	}
 out:
 	/* If some a bucket wasn't written, we can't erasure code it: */
+    /* 如果某个桶没有被写入，我们就无法擦除它的代码： */
 	for_each_set_bit(dev, op->failed.d, BCH_SB_MEMBERS_MAX)
 		bch2_open_bucket_write_error(c, &op->open_buckets, dev);
 
@@ -1528,6 +1530,7 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 
 	iter = bio->bi_iter;
 	iter.bi_size = data_len;
+    // 移动数据到内敛数据空间
 	memcpy_from_bio(id->v.data, bio, iter);
 
 	while (data_len & 7)
