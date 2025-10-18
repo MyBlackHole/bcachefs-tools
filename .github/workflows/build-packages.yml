@@ -8,7 +8,7 @@ jobs:
     name: bcachefs-tools-msrv
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Disable initramfs update
         run: sudo sed -i 's/yes/no/g' /etc/initramfs-tools/update-initramfs.conf
       - name: Disable man-db update

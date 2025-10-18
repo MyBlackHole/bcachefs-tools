@@ -224,7 +224,7 @@ jobs:
           cargo install --locked cargo-vendor-filterer
       - name: Fetch our git repository
         timeout-minutes: 1
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: 'bcachefs-tools'
           fetch-depth: 0
