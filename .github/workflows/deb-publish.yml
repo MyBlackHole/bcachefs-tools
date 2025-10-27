@@ -164,7 +164,7 @@ jobs:
           rm -rf "${{ github.workspace }}/packed-artifacts"
       - name: Download all artifacts
         timeout-minutes: 1
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: packed-artifacts
       - name: Check attestation of all incoming artifact archives

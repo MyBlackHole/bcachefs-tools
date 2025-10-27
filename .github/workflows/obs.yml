@@ -170,7 +170,7 @@ jobs:
           rm -rf "${{ github.workspace }}/deb-src"
       - name: Download source-only .deb to be built
         timeout-minutes: 1
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           artifact-ids: ${{ inputs.deb-src-artifact-id }}
           path: deb-src
