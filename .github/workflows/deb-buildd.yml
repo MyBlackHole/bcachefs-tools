@@ -424,7 +424,7 @@ jobs:
       - name: Upload build artifact archive
         timeout-minutes: 1
         id: deb-bin-upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: artifact-bin-${{ inputs.dist-version }}-${{ inputs.host-arch }}.tar
           path: '${{ github.workspace }}/deb-bin/artifact-bin-${{ inputs.dist-version }}-${{ inputs.host-arch }}.tar'

@@ -306,7 +306,7 @@ jobs:
       - name: Upload the source-only .deb package artifact archive
         timeout-minutes: 1
         id: deb-src-upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: artifact-src.tar
           path: '${{ github.workspace }}/deb-src/artifact-src.tar'
