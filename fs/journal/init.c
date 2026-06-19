@@ -15,6 +15,7 @@
 
 /* allocate journal on a device: */
 
+// 备注：在设备上分配指定数量日志桶
 static int bch2_set_nr_journal_buckets_iter(struct bch_dev *ca, unsigned nr,
 					    bool new_fs, enum bch_watermark watermark,
 					    struct closure *cl)
@@ -26,6 +27,7 @@ static int bch2_set_nr_journal_buckets_iter(struct bch_dev *ca, unsigned nr,
 
 	BUG_ON(nr <= ja->nr);
 
+	// 备注：桶号数组
 	long *bu __free(kfree)			= kcalloc(nr_want, sizeof(*bu), GFP_KERNEL);
 	struct open_bucket **ob __free(kfree)	= kcalloc(nr_want, sizeof(*ob), GFP_KERNEL);
 	u64 *new_buckets __free(kfree)		= kcalloc(nr, sizeof(u64), GFP_KERNEL);
@@ -65,6 +67,7 @@ static int bch2_set_nr_journal_buckets_iter(struct bch_dev *ca, unsigned nr,
 			break;
 		}
 
+		// 备注：记录日志桶号
 		bu[nr_got] = ob[nr_got]->bucket;
 	}
 
@@ -97,6 +100,7 @@ static int bch2_set_nr_journal_buckets_iter(struct bch_dev *ca, unsigned nr,
 			new_bucket_seq[pos + i] = 0;
 		}
 
+		// 备注：修改日志桶分配信息
 		nr = ja->nr + nr_got;
 
 		ret = bch2_journal_buckets_to_sb(c, ca, new_buckets, nr);
@@ -179,6 +183,8 @@ static int bch2_set_nr_journal_buckets_loop(struct bch_fs *c, struct bch_dev *ca
  * Allocate more journal space at runtime - not currently making use if it, but
  * the code works:
  */
+// 备注：在运行时分配更多的日志空间 - 目前没有使用它，
+// 备注：但代码有效：
 int bch2_set_nr_journal_buckets(struct bch_fs *c, struct bch_dev *ca,
 				unsigned nr)
 {
@@ -253,6 +259,7 @@ int bch2_dev_journal_bucket_delete(struct bch_dev *ca, u64 b)
 	return 0;
 }
 
+// 备注：在设备上分配日志存放空间
 int bch2_dev_journal_alloc(struct bch_dev *ca, bool new_fs)
 {
 	struct bch_fs *c = ca->fs;
@@ -274,22 +281,27 @@ int bch2_dev_journal_alloc(struct bch_dev *ca, bool new_fs)
 	}
 
 	/* 1/128th of the device by default: */
+	// 备注：默认为设备的 1/128:
 	nr = ca->mi.nbuckets >> 7;
 
 	/*
 	 * clamp journal size to 8192 buckets or 8GB (in sectors), whichever
 	 * is smaller:
 	 */
+	// 备注：将日志大小限制为 8192 个存储桶或 8GB（以扇区为单位），
+	// 备注：以较小者为准：
 	nr = clamp_t(unsigned, nr,
 		     BCH_JOURNAL_BUCKETS_MIN,
 		     system_totalram_bytes() / 4 / bucket_bytes(ca));
 
+	// 备注：分配指定数量的日志存储桶
 	ret = bch2_set_nr_journal_buckets_loop(c, ca, nr, new_fs);
 err:
 	bch_err_fn_dev(ca, ret);
 	return ret;
 }
 
+// 备注：对每个设备 bch_dev 分配日志存放空间
 int bch2_fs_journal_alloc(struct bch_fs *c)
 {
 	for_each_online_member(c, ca, BCH_DEV_READ_REF_fs_journal_alloc) {

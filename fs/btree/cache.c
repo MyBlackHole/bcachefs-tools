@@ -266,6 +266,40 @@ static int __btree_node_data_alloc(struct bch_fs *c, struct btree_node_bufs *b,
 	return 0;
 }
 
+// 备注：__btree_node_mem_alloc() - 分配B树节点内存结构
+// 备注：@c: 文件系统实例
+// 备注：@gfp: 内存分配标志
+// 备注：
+// 备注：Returns: 分配的btree节点，NULL表示失败
+// 备注：
+// 备注：【功能概述】
+// 备注：
+// 备注：分配并初始化一个新的B树节点内存结构。这只是内存分配阶段，
+// 备注：节点的数据缓冲区(b->data)需要单独分配。
+// 备注：
+// 备注：【分配内容】
+// 备注：
+// 备注：1. btree结构本身 (sizeof(struct btree))
+// 备注：- 包含节点元数据、锁、标志位等
+// 备注：- 使用 kzalloc 初始化为0
+// 备注：
+// 备注：2. 初始化关键字段:
+// 备注：- b->key: 指向该节点的键值(用于哈希表索引)
+// 备注：- b->list: 用于链入缓存列表
+// 备注：- b->write_blocked: 写入等待队列
+// 备注：- b->byte_order: 节点大小对数(用于计算缓冲区大小)
+// 备注：
+// 备注：【使用场景】
+// 备注：
+// 备注：- 创建全新的B树节点(分裂或根节点创建)
+// 备注：- 从空闲列表重用节点结构
+// 备注：- 节点替换(rewrite)时的新节点
+// 备注：
+// 备注：【注意】
+// 备注：
+// 备注：此函数只分配节点结构，不分配数据缓冲区。
+// 备注：数据缓冲区通过 btree_node_data_alloc() 单独分配。
+// 备注：这是两阶段分配策略，允许先检查内存可用性再分配大块数据。
 static struct btree *__btree_node_mem_alloc(struct bch_fs *c, bool pcpu_read_locks, gfp_t gfp)
 {
 	struct btree *b = kzalloc(sizeof(struct btree), gfp);
@@ -619,6 +653,75 @@ static int __btree_node_reclaim_checks(struct bch_fs *c, struct btree *b,
  * this version is for btree nodes that have already been freed (we're not
  * reaping a real btree node)
  */
+// 备注：__btree_node_reclaim() - 回收(驱逐)B树节点缓存
+// 备注：@c: 文件系统实例
+// 备注：@b: 要回收的节点
+// 备注：@flush: 是否强制刷盘(dirty节点写入磁盘)
+// 备注：
+// 备注：Returns: 0 成功，负值错误码表示无法回收
+// 备注：
+// 备注：【功能概述】
+// 备注：
+// 备注：当内存压力增大时，缓存需要回收不常用的B树节点以释放内存。
+// 备注：此函数检查节点是否可以安全回收，并在允许时执行回收操作。
+// 备注：
+// 备注：【回收条件检查】(__btree_node_reclaim_checks)
+// 备注：
+// 备注：节点在以下情况**不能**被回收:
+// 备注：1. BTREE_NODE_pinned: 节点被固定(pin)，禁止驱逐
+// 备注：2. BTREE_NODE_write_blocked: 有写入被阻塞在此节点
+// 备注：3. BTREE_NODE_will_make_reachable: 即将变为可达状态
+// 备注：4. BTREE_NODE_dirty && !flush: 脏节点且不允许刷盘
+// 备注：5. read/write_in_flight: IO正在进行中
+// 备注：
+// 备注：【锁获取策略】
+// 备注：
+// 备注：回收需要获取意向锁和写锁(按此顺序，防止死锁):
+// 备注：1. six_trylock_intent(): 获取意向锁
+// 备注：2. six_trylock_write(): 获取写锁
+// 备注：
+// 备注：如任一锁获取失败，放弃回收并返回错误。
+// 备注：获取锁后重新检查条件(防止条件在锁竞争期间改变)。
+// 备注：
+// 备注：【回收流程】
+// 备注：
+// 备注：1. 初步检查(无锁):
+// 备注：- 快速检查节点状态，避免不必要的锁竞争
+// 备注：
+// 备注：2. 获取锁:
+// 备注：- 尝试获取意向锁和写锁
+// 备注：- 失败则记录统计信息并返回
+// 备注：
+// 备注：3. 重新检查(持有锁):
+// 备注：- 确保状态在获取锁期间未改变
+// 备注：- 如节点为dirty且flush=true，触发写操作
+// 备注：- 等待IO完成
+// 备注：
+// 备注：4. 执行回收:
+// 备注：- 从哈希表移除
+// 备注：- 释放数据缓冲区
+// 备注：- 将节点结构移入空闲列表
+// 备注：
+// 备注：【脏节点处理】
+// 备注：
+// 备注：当 flush=true 时:
+// 备注：- 如节点为dirty，触发异步写入
+// 备注：- 等待写入完成
+// 备注：- 确保数据持久化后才回收
+// 备注：
+// 备注：【统计信息】
+// 备注：
+// 备注：记录各种回收失败原因:
+// 备注：- not_freed[noevict]: 节点被固定
+// 备注：- not_freed[write_blocked]: 写入阻塞
+// 备注：- not_freed[dirty]: 脏节点(无flush)
+// 备注：- not_freed[lock_intent/write]: 锁获取失败
+// 备注：这些统计用于调试缓存行为和性能优化。
+// 备注：
+// 备注：【注意】
+// 备注：
+// 备注：此函数在持有 btree_cache->lock 时调用，不可睡眠。
+// 备注：IO等待通过 -EINTR 返回，由调用者重试。
 static int btree_node_reclaim(struct bch_fs *c, struct btree *b,
 			      enum btree_node_reclaim_flags flags)
 {
@@ -1038,6 +1141,7 @@ static noinline struct btree *bch2_btree_node_fill(struct btree_trans *trans,
 			return ERR_PTR(ret);
 	}
 
+	// 备注：btree 节点空间搞好了，也初始化了
 	b = bch2_btree_node_mem_alloc(trans, level != 0);
 
 	if (bch2_err_matches(PTR_ERR_OR_ZERO(b), ENOMEM)) {
@@ -1077,6 +1181,7 @@ static noinline struct btree *bch2_btree_node_fill(struct btree_trans *trans,
 			six_unlock_intent(&b->c.lock);
 			bch2_trans_unlock(trans);
 
+			// 备注：真正的读取处理
 			bch2_btree_node_read(trans, b, sync);
 
 			if (!sync)
@@ -1084,6 +1189,7 @@ static noinline struct btree *bch2_btree_node_fill(struct btree_trans *trans,
 			else if (!six_relock_type(&b->c.lock, lock_type, seq))
 				b = NULL;
 		} else {
+			// 备注：真正的读取处理
 			bch2_btree_node_read(trans, b, sync);
 			if (lock_type == SIX_LOCK_read)
 				six_lock_downgrade(&b->c.lock);
@@ -1179,6 +1285,7 @@ static void btree_node_mem_ptr_set(struct btree_trans *trans,
 		btree_node_unlock(trans, path, plevel);
 }
 
+// 备注：节点读取
 static struct btree *__bch2_btree_node_get(struct btree_trans *trans, struct btree_path *path,
 					   const struct bkey_i *k, unsigned level,
 					   enum six_lock_type lock_type,
@@ -1196,6 +1303,7 @@ static struct btree *__bch2_btree_node_get(struct btree_trans *trans, struct btr
 
 	EBUG_ON(level >= BTREE_MAX_DEPTH);
 retry:
+	// 备注：查询缓存
 	b = btree_cache_find(bc, k);
 	if (unlikely(!b)) {
 		if (unlikely(flags & BTREE_ITER_nofill))
@@ -1206,6 +1314,8 @@ retry:
 		 * else we could read in a btree node from disk that's been
 		 * freed:
 		 */
+		// 备注：我们必须锁定父节点才能调用 bch2_btree_node_fill()，
+		// 备注：否则我们可以从已被释放的磁盘中读取一个 btree 节点：
 		b = bch2_btree_node_fill(trans, path, k, path->btree_id,
 					 level, lock_type, true);
 
@@ -1312,6 +1422,7 @@ retry:
  *
  * Returns: btree node or ERR_PTR()
  */
+// 备注：在缓存中查找一个 btree 节点并锁定它，如果需要就从磁盘读取它。
 struct btree *bch2_btree_node_get(struct btree_trans *trans, struct btree_path *path,
 				  const struct bkey_i *k, unsigned level,
 				  enum six_lock_type lock_type,

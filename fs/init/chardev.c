@@ -81,6 +81,7 @@ DEFINE_CLASS(bch2_device_lookup_outer, struct bch_dev *,
       bch2_device_lookup_outer(c, dev, flags),
       struct bch_fs *c, u64 dev, unsigned flags);
 
+// 备注：全局ioctl处理
 static long bch2_global_ioctl(unsigned cmd, void __user *arg)
 {
 	long ret;
@@ -118,6 +119,7 @@ int bch2_copy_ioctl_err_msg(struct bch_ioctl_err_msg *dst, struct printbuf *src,
 	return ret;
 }
 
+// 备注：设备添加
 static long bch2_ioctl_disk_add(struct bch_fs *c, struct bch_ioctl_disk arg)
 {
 	if (!capable(CAP_SYS_ADMIN))
@@ -149,6 +151,7 @@ static long bch2_ioctl_disk_add_v2(struct bch_fs *c, struct bch_ioctl_disk_v2 ar
 	return bch2_copy_ioctl_err_msg(&arg.err, &err, ret);
 }
 
+// 备注：设备移除
 static long bch2_ioctl_disk_remove(struct bch_fs *c, struct bch_ioctl_disk arg)
 {
 	if (!capable(CAP_SYS_ADMIN))
@@ -705,6 +708,7 @@ do {									\
 	goto out;							\
 } while (0)
 
+// 备注：文件系统类型相关 ioctl 处理函数
 long bch2_fs_ioctl(struct bch_fs *c, unsigned cmd, void __user *arg)
 {
 	long ret;
@@ -759,6 +763,7 @@ long bch2_fs_ioctl(struct bch_fs *c, unsigned cmd, void __user *arg)
 	case BCH_IOCTL_DISK_RESIZE_JOURNAL_v2:
 		BCH_IOCTL(disk_resize_journal_v2, struct bch_ioctl_disk_resize_journal_v2);
 	case BCH_IOCTL_FSCK_ONLINE:
+		// 备注：启动在线恢复
 		BCH_IOCTL(fsck_online, struct bch_ioctl_fsck_online);
 	case BCH_IOCTL_QUERY_ACCOUNTING:
 		return bch2_ioctl_query_accounting(c, arg);
@@ -775,6 +780,7 @@ out:
 
 static DEFINE_IDR(bch_chardev_minor);
 
+// 备注：字符设备 ioctl 处理函数
 static long bch2_chardev_ioctl(struct file *filp, unsigned cmd, unsigned long v)
 {
 	unsigned minor = iminor(file_inode(filp));
@@ -786,6 +792,7 @@ static long bch2_chardev_ioctl(struct file *filp, unsigned cmd, unsigned long v)
 		: bch2_global_ioctl(cmd, arg);
 }
 
+// 备注：字符设备操作集
 static const struct file_operations bch_chardev_fops = {
 	.owner		= THIS_MODULE,
 	.unlocked_ioctl = bch2_chardev_ioctl,
@@ -806,6 +813,7 @@ void bch2_fs_chardev_exit(struct bch_fs *c)
 		idr_remove(&bch_chardev_minor, c->minor);
 }
 
+// 备注：注册 bch_fs 结构实例到 idr, 与绑定字符设备到文件系统
 int bch2_fs_chardev_init(struct bch_fs *c)
 {
 	c->minor = idr_alloc(&bch_chardev_minor, c, 0, 0, GFP_KERNEL);
@@ -829,10 +837,13 @@ void bch2_chardev_exit(void)
 		unregister_chrdev(bch_chardev_major, "bcachefs");
 }
 
+// 备注：字符设备初始化
 int __init bch2_chardev_init(void)
 {
 	int ret;
 
+	// 备注：注册字符设备
+	// 备注：绑定字符操作集
 	bch_chardev_major = register_chrdev(0, "bcachefs-ctl", &bch_chardev_fops);
 	if (bch_chardev_major < 0)
 		return bch_chardev_major;
@@ -841,6 +852,7 @@ int __init bch2_chardev_init(void)
 	if (ret)
 		goto major_out;
 
+	// 备注：创建字符设备
 	bch_chardev = device_create(&bch_chardev_class, NULL,
 				    MKDEV(bch_chardev_major, U8_MAX),
 				    NULL, "bcachefs-ctl");

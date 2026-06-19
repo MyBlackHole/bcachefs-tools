@@ -194,6 +194,7 @@ void bch2_open_bucket_write_error(struct bch_fs *c,
 			bch2_ec_bucket_cancel(c, ob, err);
 }
 
+// 备注：空闲桶分配器
 static struct open_bucket *bch2_open_bucket_alloc(struct bch_fs_allocator *c)
 {
 	BUG_ON(!c->open_buckets_freelist || !c->open_buckets_nr_free);
@@ -348,6 +349,7 @@ static struct open_bucket *try_alloc_bucket(struct btree_trans *trans,
 /*
  * This path is for before the freespace btree is initialized:
  */
+// 备注：此路径用于初始化空闲空间 btree 之前：
 static noinline struct open_bucket *
 bch2_bucket_alloc_early(struct btree_trans *trans,
 			struct alloc_request *req)
@@ -609,11 +611,12 @@ static bool req_alloc_should_bail(struct bch_fs *c, struct alloc_request *req)
 
 /**
  * bch2_bucket_alloc_trans - allocate a single bucket from a specific device
- * @trans:	transaction object
- * @req:	state for the entire allocation
+ * @trans:     transaction object
+ * @req:       state for the entire allocation
  *
- * Returns:	an open_bucket on success, or an ERR_PTR() on failure.
+ * Returns:    an open_bucket on success, or an ERR_PTR() on failure.
  */
+// 备注：从特定设备分配单个存储桶
 struct open_bucket *bch2_bucket_alloc_trans(struct btree_trans *trans,
 					    struct alloc_request *req)
 {
@@ -628,7 +631,9 @@ struct open_bucket *bch2_bucket_alloc_trans(struct btree_trans *trans,
 	memset(&req->counters, 0, sizeof(req->counters));
 again:
 	u32 wake_counter_snapshot = atomic_read(&ca->alloc_wake_counter);
+	// 备注：获取设备的使用情况
 	bch2_dev_usage_read_fast(ca, &req->usage);
+	// 备注：获取可用桶数量
 	u64 avail = __dev_buckets_free(ca, req->usage, req->watermark);
 
 	if (req->usage.buckets[BCH_DATA_need_discard] >
@@ -860,6 +865,53 @@ static int add_new_bucket(struct bch_fs *c,
 	return 0;
 }
 
+// 备注：============================================================================
+// 备注：bch2_bucket_alloc_set_trans() - 从设备集分配桶
+// 备注：============================================================================
+// 备注：
+// 备注：【函数定位】
+// 备注：
+// 备注：此函数负责从一组候选设备中分配open bucket，实现条带化(striping)分配策略。
+// 备注：它遍历排序后的设备列表，尝试从每个设备分配bucket，直到满足副本要求。
+// 备注：
+// 备注：【条带化分配策略】
+// 备注：
+// 备注：1. 设备排序:
+// 备注：- 使用stripe->next_alloc时钟指针进行排序
+// 备注：- 优先选择时钟指针值小的设备(即较少被分配的设备)
+// 备注：- 实现 round-robin + 空闲空间加权的分配策略
+// 备注：
+// 备注：2. 设备选择:
+// 备注：- 获取设备引用(bch2_dev_tryget_noerror)
+// 备注：- 检查设备耐久性(durability)
+// 备注：- 跳过已满足缓存要求的设备
+// 备注：
+// 备注：3. 分配流程:
+// 备注：- 对每个设备调用bch2_bucket_alloc_trans()分配bucket
+// 备注：- 成功后更新条带状态(bch2_dev_stripe_increment_inlined)
+// 备注：- 累加有效副本数(add_new_bucket)
+// 备注：
+// 备注：【错误处理】
+// 备注：
+// 备注：- BCH_ERR_transaction_restart: 事务需要重启，立即返回
+// 备注：- BCH_ERR_operation_blocked: 操作被阻塞，立即返回
+// 备注：- BCH_ERR_open_buckets_empty: open bucket耗尽，立即返回
+// 备注：- 其他错误: 继续尝试下一个设备
+// 备注：
+// 备注：【参数说明】
+// 备注：
+// 备注：@trans: B树事务上下文
+// 备注：@req: 分配请求结构，输入输出参数
+// 备注：- devs_may_alloc: 可分配的设备掩码(输入)
+// 备注：- devs_sorted: 排序后的设备列表(输出)
+// 备注：- nr_effective: 有效副本数(输出)
+// 备注：@stripe: 条带状态，用于设备排序和时钟管理
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：- 0: 成功，req->nr_effective >= req->nr_replicas
+// 备注：- -BCH_ERR_insufficient_devices: 设备不足，无法分配足够副本
+// 备注：- 其他负值: 需要立即处理的错误(如事务重启)
 int bch2_bucket_alloc_set_trans(struct btree_trans *trans,
 				struct alloc_request *req,
 				struct dev_stripe_state *stripe)
@@ -867,18 +919,26 @@ int bch2_bucket_alloc_set_trans(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	int ret = 0;
 
+	// 备注：前置条件: 不应在已满足副本要求时调用
 	BUG_ON(req->nr_effective >= req->nr_replicas);
 
+	// 备注：根据条带时钟对设备排序，实现公平分配
 	bch2_dev_alloc_list(c, stripe, &req->devs_may_alloc, &req->devs_sorted);
 
+	// 备注：如只有一个候选设备，不启用目标设备重试
 	if (req->devs_sorted.nr <= 1)
 		req->will_retry_target_devices = false;
 
+	// 备注：遍历排序后的设备列表，尝试从每个设备分配
 	darray_for_each(req->devs_sorted, i) {
+		// 备注：获取设备引用，防止设备在分配期间被移除
 		req->ca = bch2_dev_tryget_noerror(c, *i);
 		if (!req->ca)
 			continue;
 
+		// 备注：跳过不必要的缓存设备
+		// 备注：如已有一个缓存设备(have_cache=true)，不再分配额外的缓存设备
+		// 备注：durability=0表示缓存设备，durability>0表示持久化设备
 		if (!req->ca->mi.durability && req->have_cache) {
 			bch2_dev_put(req->ca);
 			req->ca = NULL;
@@ -888,23 +948,35 @@ int bch2_bucket_alloc_set_trans(struct btree_trans *trans,
 		req->will_retry_set_devices =
 			i + 1 < req->devs_sorted.data + req->devs_sorted.nr;
 
+		// 备注：从当前设备分配open bucket
 		struct open_bucket *ob = bch2_bucket_alloc_trans(trans, req);
+
+		// 备注：分配成功，更新条带时钟指针
 		if (!IS_ERR(ob))
 			bch2_dev_stripe_increment_inlined(req->ca, stripe, &req->usage);
 
+		// 备注：释放设备引用
 		bch2_dev_put(req->ca);
 		req->ca = NULL;
 
+		// 备注：错误处理：某些错误需要立即返回，其他错误继续尝试下一个设备
 		if (IS_ERR(ob)) { /* don't squash error */
 			ret = PTR_ERR(ob);
+			// 备注：以下错误需要立即返回给上层处理：
+			// 备注：- transaction_restart: 需要重启事务
+			// 备注：- operation_blocked: 操作被阻塞，需要等待
+			// 备注：- open_buckets_empty: open bucket池耗尽
 			if (bch2_err_matches(ret, BCH_ERR_transaction_restart) ||
 			    bch2_err_matches(ret, BCH_ERR_operation_blocked) ||
 			    bch2_err_matches(ret, BCH_ERR_open_buckets_empty))
 				return ret;
+			// 备注：其他错误(如freelist_empty)继续尝试下一个设备
 		} else if (add_new_bucket(c, req, ob))
+			// 备注：成功添加bucket且满足副本要求，返回成功
 			return 0;
 	}
 
+	// 备注：所有设备尝试完毕仍无法满足副本要求，返回设备不足错误
 	return ret ?: alloc_trace_add(req, BCH_SB_MEMBER_INVALID,
 			bch_err_throw(c, insufficient_devices), 0, 0, false);
 }
@@ -1301,6 +1373,96 @@ deallocate_extra_replicas(struct bch_fs *c,
 /*
  * Get us an open_bucket we can allocate from, return with it locked:
  */
+// 备注：============================================================================
+// 备注：bch2_alloc_sectors_req() - 扇区分配核心函数
+// 备注：============================================================================
+// 备注：
+// 备注：【函数定位】
+// 备注：
+// 备注：这是bcachefs分配器系统的核心函数，负责从open bucket中分配扇区空间。
+// 备注：它处理复杂的分配策略，包括设备选择、副本管理、纠删码(EC)分配等。
+// 备注：
+// 备注：【调用路径】
+// 备注：
+// 备注：1. 数据写入: bch2_write() → __bch2_write() → bch2_alloc_sectors_req()
+// 备注：2. B树写入: bch2_btree_node_write() → bch2_alloc_sectors_req()
+// 备注：3. 数据更新: bch2_data_update() → bch2_alloc_sectors_req()
+// 备注：
+// 备注：【核心职责】
+// 备注：
+// 备注：1. 写入点查找与管理:
+// 备注：- 根据write_point_specifier查找或创建write_point
+// 备注：- 每个write_point对应特定的数据类型和目标设备
+// 备注：
+// 备注：2. 设备选择与分配策略:
+// 备注：- 优先从指定目标(target)分配
+// 备注：- 如失败，回退到所有可用设备
+// 备注：- 支持纠删码(EC)分配
+// 备注：
+// 备注：3. 副本管理:
+// 备注：- 确保分配足够数量的副本(nr_replicas)
+// 备注：- 处理不同 durability 的设备组合
+// 备注：- 支持缓存设备(durability=0)和持久化设备
+// 备注：
+// 备注：4. 空间对齐:
+// 备注：- 确保分配的空间满足块大小对齐要求
+// 备注：- 处理不同设备块大小的混合使用
+// 备注：
+// 备注：【分配流程详解】
+// 备注：
+// 备注：1. 初始化分配请求:
+// 备注：- 重置状态标志(will_retry_all_devices, will_retry_target_devices)
+// 备注：- 清空已分配指针列表
+// 备注：- 查找对应的write_point
+// 备注：
+// 备注：2. 设备选择过滤:
+// 备注：- 获取目标设备集(target_rw_devs)
+// 备注：- 排除已有指针的设备
+// 备注：- 排除已分配的open bucket对应的设备
+// 备注：
+// 备注：3. 尝试分配策略(按优先级):
+// 备注：a) bucket_alloc_set_writepoint() - 从writepoint现有bucket分配
+// 备注：b) bucket_alloc_set_partial() - 从部分填充的bucket分配
+// 备注：c) bucket_alloc_from_stripe() - 从EC条带分配(如启用EC)
+// 备注：d) bch2_bucket_alloc_set_trans() - 从设备分配新bucket
+// 备注：
+// 备注：4. 错误处理与重试:
+// 备注：- 如目标设备不足，回退到所有设备
+// 备注：- 如分配被阻塞，等待并重试
+// 备注：- 如EC分配失败，回退到普通副本
+// 备注：
+// 备注：5. 空间对齐与验证:
+// 备注：- 计算每个bucket的对齐偏移
+// 备注：- 确保最小可用空间
+// 备注：- 更新write_point的sectors_free
+// 备注：
+// 备注：【关键概念】
+// 备注：
+// 备注：- write_point: 写入点，管理一组用于写入的open bucket
+// 备注：- open_bucket: 已打开用于写入的bucket，可被多个写入共享
+// 备注：- durability: 设备的耐久性级别(0=缓存, 1+=持久化)
+// 备注：- effective replicas: 实际有效的副本数(考虑durability)
+// 备注：
+// 备注：【参数说明】
+// 备注：
+// 备注：@trans: B树事务上下文
+// 备注：@req: 分配请求结构，包含目标、副本数、标志等
+// 备注：@write_point: 写入点指定符(可以是特定wp或自动选择)
+// 备注：@wp_ret: 输出参数，返回使用的write_point指针
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：- 0: 成功，wp指向有效的分配空间
+// 备注：- -BCH_ERR_freelist_empty: 空闲列表为空，需要等待
+// 备注：- -BCH_ERR_insufficient_devices: 可用设备不足
+// 备注：- -BCH_ERR_operation_blocked: 操作被阻塞
+// 备注：- 其他负值: 错误码
+// 备注：
+// 备注：【性能考虑】
+// 备注：
+// 备注：- 优先重用writepoint现有bucket，避免新分配开销
+// 备注：- 批量分配减少锁竞争
+// 备注：- 异步检查discard状态，不阻塞分配路径
 int bch2_alloc_sectors_req(struct btree_trans *trans,
 			   struct alloc_request *req,
 			   struct write_point_specifier write_point,

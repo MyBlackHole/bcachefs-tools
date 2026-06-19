@@ -32,6 +32,28 @@ enum bch_watermark {
 
 #define OPEN_BUCKETS_COUNT	4096
 
+// 备注：写点（write point）管理机制。
+// 备注：
+// 备注：write_point 是分配器的核心概念，标识"正在写入的 open bucket"集合。
+// 备注：不同来源的 I/O 被隔离到不同的写点，避免相互干扰。
+// 备注：
+// 备注：WRITE_POINT_MAX=32 个写点池，每个写点包含若干 open bucket。
+// 备注：
+// 备注：写点分配规则（writepoint_find() in foreground.c）:
+// 备注：  每次 bch2_alloc_sectors_req() 传入一个 write_point_specifier，
+// 备注：  这个值通常来自当前 PID（写线程的 task pid）。
+// 备注：  writepoint_find() 用 write_point_v 做 hash 查找已有写点。
+// 备注：  如果没找到: 从池中找最近最久未使用(LRU)的写点，reuse 之。
+// 备注：  如果池满: try_increase_writepoints() 扩容（最多 32 个）。
+// 备注：
+// 备注：隔离效果: 不同 PID 的写线程各自用不同的写点，即使用不同 bucket。
+// 备注：这减少了并发写入时的锁竞争和 metadata 碎片。
+// 备注：
+// 备注：4 级分配优先级（bch2_alloc_sectors_req() 中）:
+// 备注：  1) bucket_alloc_set_writepoint() — 当前写点已有 bucket 续写
+// 备注：  2) bucket_alloc_set_partial()    — 其他写点释放的部分 bucket
+// 备注：  3) bucket_alloc_from_stripe()    — EC 条带分配
+// 备注：  4) bch2_bucket_alloc_set_trans() — 从设备分配全新 bucket
 #define WRITE_POINT_HASH_NR	32
 #define WRITE_POINT_MAX		32
 
@@ -41,9 +63,12 @@ enum bch_watermark {
 typedef u16			open_bucket_idx_t;
 
 struct open_bucket {
+	// 备注：操作锁
 	spinlock_t		lock;
 	atomic_t		pin;
+	// 备注：指向下一个空闲的 open_bucket
 	open_bucket_idx_t	freelist;
+	// 备注：指向 open_buckets_hash 数组的下标
 	open_bucket_idx_t	hash;
 
 	/*
@@ -59,6 +84,8 @@ struct open_bucket {
 	u8			dev;
 	u8			gen;
 	u32			sectors_free;
+	// 备注：bucket number
+	// 备注：桶号 */
 	u64			bucket;
 	struct ec_stripe_new	*ec;
 };

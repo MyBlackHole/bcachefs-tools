@@ -1,3 +1,19 @@
+// ============================================
+// 备注：bcachefs 命令行工具主入口
+//
+// 备注：这是 bcachefs-tools 的 main() 函数所在文件。
+// 备注：架构：命令分发采用 clap + TOML 定义 + dispatch 模式。
+//
+// 备注：启动流程：
+// 备注：  1. 注册致命信号处理器（panic/SIGSEGV 统一 backtrace）
+// 备注：  2. 处理符号链接调用（mkfs.bcachefs → format 等）
+// 备注：  3. 初始化 RAID 表和 shrinker
+// 备注：  4. 检查内核配置警告
+// 备注：  5. 分发到对应子命令
+//
+// 备注：命令定义在 src/commands/ 目录，通过 TOML 文件描述命令元数据，
+// 备注：然后在 Rust 中生成 clap CLI 结构和 dispatch 逻辑。
+// ============================================
 mod commands;
 mod copy_fs;
 mod device_multipath;
@@ -259,12 +275,19 @@ fn generate_cli_doc() -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    // 备注：bch2_install_fatal_signal_handlers — 注册致命信号处理器。
+    // 备注：Cargo.toml 配置 panic = "abort" 确保 Rust panic 不会被 catch_unwind 吞掉。
+    // 备注：安装 SIGABRT/SIGSEGV/SIGILL/SIGBUS/SIGFPE 的 C 端处理器，
+    // 备注：在 core dump 之前通过 bch2_prt_task_backtrace 统一打印 backtrace。
     // panic = "abort" in Cargo.toml ensures Rust panics can't be swallowed
     // by catch_unwind; this installs C-side handlers for SIGABRT/SIGSEGV/
     // SIGILL/SIGBUS/SIGFPE so a panic or fatal fault prints a unified
     // backtrace via bch2_prt_task_backtrace before the kernel core-dumps.
     unsafe { c::bch2_install_fatal_signal_handlers(); }
 
+    // 备注：stdout 行缓冲 — glibc 和 Rust stdlib 各自缓冲 stdout，
+    // 备注：管道模式下两者都切换到块缓冲，可能导致输出乱序或丢失。
+    // 备注：手动设置 _IOLBF（行缓冲）来解决。
     // glibc and Rust stdlib buffer stdout independently; when piped, both
     // switch to block buffering which can reorder or lose output.
     // Set both to line-buffered.
@@ -275,6 +298,11 @@ fn main() -> ExitCode {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // 备注：符号链接调用处理 — 系统可能通过符号链接调用 bcachefs 工具：
+    // 备注：  mkfs.bcachefs → format
+    // 备注：  fsck.bcachefs → fsck
+    // 备注：  mount.bcachefs → mount
+    // 备注：  mount.fuse.bcachefs → fusemount
     // Handle symlink invocations (mkfs.bcachefs, fsck.bcachefs, mount.bcachefs, etc.)
     let symlink_cmd: Option<&str> = if args[0].contains("mkfs") {
         Some("format")
@@ -332,3 +360,4 @@ fn main() -> ExitCode {
         }
     }
 }
+

@@ -2,6 +2,26 @@
 #ifndef _RUST_SHIMS_H
 #define _RUST_SHIMS_H
 
+//
+// ============================================
+// 备注：Rust/C 桥接 Shims
+//
+// 备注：这个头文件声明了锈化（Rust → C）所需的 C wrapper 函数。
+// 备注：这些 shims 的存在是因为：
+// 备注：  1. bindgen 无法导出 C static inline 函数
+// 备注：  2. bindgen 无法处理某些宏生成的复杂类型签名
+// 备注：  3. 有些模式（如 for_each 迭代）通过函数指针实现
+//
+// 备注：主要分类：
+// 备注：  - Superblock：校验和计算（csum_vstruct）
+// 备注：  - Device 管理：在线设备引用计数
+// 备注：  - Data IO：读写提交（rust_write_submit / rust_read_submit）
+// 备注：  - 加密：dump sanitize 中的解密
+// 备注：  - Bitmap：原子位操作（set_bit）
+// 备注：  - 记账：accounting_mem_read
+// 备注：  - 数据迁移：extent 构造和插入
+// 备注：  - fsck 清理：strip alloc info
+// ============================================
 /*
  * C wrapper functions for Rust code that needs to call static inline
  * functions or functions whose types don't work well with bindgen.

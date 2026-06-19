@@ -323,6 +323,7 @@ struct bch_extent {
 } __packed __aligned(8);
 
 /* Maximum size (in u64s) a single pointer could be: */
+// 备注：单个指针的最大尺寸(以 u64 为单位)
 #define BKEY_EXTENT_PTR_U64s_MAX				\
 	((sizeof(struct bch_extent_crc128) +			\
 	  sizeof(struct bch_extent_ptr)) / sizeof(__u64))
@@ -336,10 +337,12 @@ struct bch_extent {
  * pointers to bring durability accounting up to the desired level, so both
  * sets of pointers coexist.
  */
+// 备注：整个范围值的最大可能大小 
 #define BKEY_EXTENT_VAL_U64s_MAX				\
 	(5 + BKEY_EXTENT_PTR_U64s_MAX * (BCH_REPLICAS_MAX * 2 + 1))
 
 /* * Maximum possible size of an entire extent, key + value: */
+// 备注：整个范围的最大可能大小，key + value 
 #define BKEY_EXTENT_U64s_MAX		(BKEY_U64s + BKEY_EXTENT_VAL_U64s_MAX)
 
 /*

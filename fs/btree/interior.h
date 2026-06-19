@@ -295,6 +295,7 @@ static inline bool __btree_addr_written(struct btree *b, void *p)
 	return p < write_block(b);
 }
 
+// 备注：判断是否已经写了
 static inline bool bset_written(struct btree *b, struct bset *i)
 {
 	return __btree_addr_written(b, i);

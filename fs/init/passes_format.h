@@ -2,10 +2,15 @@
 #ifndef _BCACHEFS_RECOVERY_PASSES_FORMAT_H
 #define _BCACHEFS_RECOVERY_PASSES_FORMAT_H
 
+// 备注：沉默的，不想要执行的 
 #define PASS_SILENT		BIT(0)
+// 备注：检查文件系统 
 #define PASS_FSCK		BIT(1)
+// 备注：清除不干净的 
 #define PASS_UNCLEAN		BIT(2)
+// 备注：始终运行 
 #define PASS_ALWAYS		BIT(3)
+// 备注：在线检查 
 #define PASS_ONLINE		BIT(4)
 #define PASS_ALLOC		BIT(5)
 #define PASS_NODEFER		BIT(6)
@@ -231,6 +236,7 @@
 	  "completing recovery")
 
 /* We normally enumerate recovery passes in the order we run them: */
+// 备注：我们通常按照运行顺序枚举恢复过程：
 enum bch_recovery_pass {
 #define x(n, ...)	BCH_RECOVERY_PASS_##n,
 	BCH_RECOVERY_PASSES()

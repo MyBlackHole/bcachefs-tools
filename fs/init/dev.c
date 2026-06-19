@@ -258,6 +258,8 @@ __cold void bch2_devs_list_to_text(struct printbuf *out,
 	}
 }
 
+// 备注：检查桶大小
+// 备注：检查块大小
 static int bch2_dev_may_add(struct bch_sb *sb, struct bch_fs *c)
 {
 	struct bch_member m = bch2_sb_member_get(sb, sb->dev_idx);
@@ -604,6 +606,8 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 
 	bch2_dev_journal_init_early(ca);
 
+	// 备注：初始化 io_ref READ, 在 io_ref 计数为 0 时，执行 bch2_dev_io_ref_read_complete
+	// 备注：初始化 io_ref WRITE, 在 io_ref 计数为 0 时，执行 bch2_dev_io_ref_write_complete
 	if (enumerated_ref_init(&ca->io_ref[READ],  BCH_DEV_READ_REF_NR,  NULL) ||
 	    enumerated_ref_init(&ca->io_ref[WRITE], BCH_DEV_WRITE_REF_NR, NULL) ||
 	    !(ca->sb_read_scratch = kmalloc(BCH_SB_READ_SCRATCH_BUF_SIZE, GFP_KERNEL)) ||
@@ -634,6 +638,7 @@ static void bch2_dev_attach(struct bch_fs *c, struct bch_dev *ca,
 		pr_warn("error creating sysfs objects");
 }
 
+// 备注：使用 member 构建 bch_dev
 int bch2_dev_alloc(struct bch_fs *c, unsigned dev_idx)
 {
 	struct bch_member member = bch2_sb_member_get(c->disk_sb.sb, dev_idx);
@@ -757,6 +762,7 @@ void bch2_dev_read_identity(struct block_device *bdev,
 	}
 }
 
+// 备注：sb 附加到 ca
 static int __bch2_dev_attach_bdev(struct bch_fs *c, struct bch_dev *ca,
 				  struct bch_sb_handle *sb, struct printbuf *err)
 {
@@ -933,7 +939,9 @@ int bch2_dev_set_state(struct bch_fs *c, struct bch_dev *ca,
 }
 
 /* Device add/removal: */
+// 备注：设备 添加/删除
 
+// 备注：设备删除
 static int __bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca,
 			     bool fast_device_removal, int flags,
 			     struct printbuf *err)
@@ -1023,6 +1031,7 @@ static int __bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca,
 	 */
 	__bch2_dev_offline(c, ca);
 
+	// 备注：移除分配内容
 	ret = bch2_dev_remove_alloc(c, ca);
 	if (ret) {
 		prt_printf(err, "bch2_dev_remove_alloc() error: %s\n", bch2_err_str(ret));
@@ -1152,18 +1161,79 @@ int bch2_dev_add_initialize(struct bch_fs *c, struct bch_dev *ca)
 }
 
 /* Add new device to running filesystem: */
+// 备注：将新设备添加到正在运行的文件系统:
+// 备注：bch2_dev_add - 添加新设备到文件系统
+// 备注：@c: 文件系统实例
+// 备注：@path: 设备路径（如 /dev/sdb1）
+// 备注：@err: 错误信息输出缓冲区
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是bcachefs在线扩容的核心函数，用于将新设备添加到现有文件系统中。
+// 备注：支持添加为数据设备、缓存设备或日志设备。
+// 备注：
+// 备注：【添加流程】
+// 备注：
+// 备注：1. 读取设备超级块：
+// 备注：- 验证设备是否为bcachefs格式
+// 备注：- 检查UUID是否匹配
+// 备注：- 获取设备成员信息
+// 备注：
+// 备注：2. 兼容性检查：
+// 备注：- 块大小是否匹配
+// 备注：- 桶大小是否合适
+// 备注：- 检查设备是否已存在
+// 备注：
+// 备注：3. 设备分配和初始化：
+// 备注：- 分配bch_dev结构
+// 备注：- 附加块设备
+// 备注：- 初始化分配器
+// 备注：
+// 备注：4. 超级块更新：
+// 备注：- 添加成员信息到文件系统超级块
+// 备注：- 分配设备索引
+// 备注：- 写入更新后的超级块
+// 备注：
+// 备注：5. 启动设备：
+// 备注：- 初始化LRU和分配器
+// 备注：- 启动垃圾回收
+// 备注：- 使设备可用
+// 备注：
+// 备注：【并发控制】
+// 备注：
+// 备注：- 持有c->state_lock写锁保护状态变更
+// 备注：- 使用c->sb_lock保护超级块修改
+// 备注：- 设备添加期间阻塞其他设备操作
+// 备注：
+// 备注：【参数说明】
+// 备注：
+// 备注：@c: 文件系统实例，必须已启动
+// 备注：@path: 要添加的设备路径
+// 备注：@err: 详细错误信息输出（可为NULL）
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：- 0: 成功，设备已添加并可用
+// 备注：- -EINVAL: 参数无效
+// 备注：- -EEXIST: 设备已在文件系统中
+// 备注：- -ENOMEM: 内存不足
+// 备注：- 其他负值: 错误码
 int bch2_dev_add(struct bch_fs *c, const char *path, struct printbuf *err)
 {
 	int ret = 0;
 
 	struct bch_opts opts = bch2_opts_empty();
 	struct bch_sb_handle sb __cleanup(bch2_free_super) = {};
+
+	// 备注：步骤1: 读取设备超级块
+	// 备注：验证设备格式和兼容性，获取设备元数据
 	ret = bch2_read_super(path, &opts, &sb);
 	if (ret) {
 		prt_printf(err, "error reading superblock: %s\n", bch2_err_str(ret));
 		return ret;
 	}
 
+	// 备注：获取设备的成员信息（桶大小、标签、特性等）
 	struct bch_member dev_mi = bch2_sb_member_get(sb.sb, sb.sb->dev_idx);
 
 	CLASS(printbuf, label)();
@@ -1187,12 +1257,15 @@ int bch2_dev_add(struct bch_fs *c, const char *path, struct printbuf *err)
 		}
 	}
 
+	// 备注：检查桶与块大小
 	try(bch2_dev_may_add(sb.sb, c));
 
+	// 备注：分配 bch_dev
 	struct bch_dev *ca = __bch2_dev_alloc(c, &dev_mi);
 	if (!ca)
 		return -ENOMEM;
 
+	// 备注：sb 附加到 ca
 	ret = __bch2_dev_attach_bdev(c, ca, &sb, err);
 	if (ret)
 		goto err;
@@ -1310,6 +1383,7 @@ err_late:
 }
 
 /* Hot add existing device to running filesystem: */
+// 备注：热添加现有设备到正在运行的文件系统
 int bch2_dev_online(struct bch_fs *c, const char *path, struct printbuf *err)
 {
 	struct bch_opts opts = bch2_opts_empty();
@@ -1348,6 +1422,7 @@ int bch2_dev_online(struct bch_fs *c, const char *path, struct printbuf *err)
 		__bch2_dev_read_write(c, ca);
 
 	if (!ca->mi.freespace_initialized) {
+		// 备注：初始化此设备空间信息
 		ret = bch2_dev_freespace_init(c, ca, 0, ca->mi.nbuckets);
 		if (ret) {
 			prt_printf(err, "bch2_dev_freespace_init() error: %s\n", bch2_err_str(ret));
@@ -1356,6 +1431,7 @@ int bch2_dev_online(struct bch_fs *c, const char *path, struct printbuf *err)
 	}
 
 	if (!ca->journal.nr) {
+		// 备注：初始化此设备日志储存信息
 		ret = bch2_dev_journal_alloc(ca, false);
 		if (ret) {
 			prt_printf(err, "bch2_dev_journal_alloc() error: %s\n", bch2_err_str(ret));

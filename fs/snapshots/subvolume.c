@@ -342,6 +342,7 @@ int bch2_snapshot_get_subvol(struct btree_trans *trans, u32 snapshot,
 		bch2_subvolume_get(trans, le32_to_cpu(snap.subvol), true, subvol);
 }
 
+// 备注：获取子卷快照 id
 int __bch2_subvolume_get_snapshot(struct btree_trans *trans, u32 subvolid,
 				  u32 *snapid, bool warn)
 {
@@ -541,6 +542,37 @@ int bch2_subvolume_unlink(struct btree_trans *trans, u32 subvolid)
 	return ret;
 }
 
+// 备注：bch2_subvolume_create - 创建子卷或快照
+// 备注：@trans:	btree 事务
+// 备注：@inode:		新子卷的根 inode 号
+// 备注：@parent_subvolid:	父子卷 ID（用于文件系统路径）
+// 备注：@src_subvolid:	源子卷 ID（如创建快照）
+// 备注：@new_subvolid:	输出新子卷 ID
+// 备注：@new_snapshotid:	输出新快照 ID
+// 备注：@ro:			是否只读
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是 bcachefs 子卷管理的核心函数，支持两种操作模式：
+// 备注：
+// 备注：1. 创建新子卷 (src_subvolid = 0):
+// 备注：   - 分配新的子卷 ID
+// 备注：   - 创建对应的快照节点
+// 备注：   - 初始化子卷元数据
+// 备注：
+// 备注：2. 创建快照 (src_subvolid != 0):
+// 备注：   - 基于源子卷创建快照
+// 备注：   - 创建快照树父子关系
+// 备注：   - 源子卷变为不可变（COW 开始）
+// 备注：
+// 备注：【快照创建流程】
+// 备注：
+// 备注：1. 分配新的子卷槽位
+// 备注：2. 获取源子卷的快照 ID（作为父快照）
+// 备注：3. 创建快照节点（一个或两个）
+// 备注：4. 更新源子卷的快照 ID
+// 备注：5. 初始化新子卷的元数据
+// 备注：6. 设置只读/快照标志
 int bch2_subvolume_create(struct btree_trans *trans, u64 inode,
 			  u32 parent_subvolid,
 			  u32 src_subvolid,
@@ -554,6 +586,7 @@ int bch2_subvolume_create(struct btree_trans *trans, u64 inode,
 	struct bkey_i_subvolume *src_subvol = NULL;
 	u32 parent = 0, new_nodes[2], snapshot_subvols[2];
 
+	// 备注：在 subvolumes btree 中分配新的空槽位
 	CLASS(btree_iter_uninit, dst_iter)(trans);
 	int ret = bch2_bkey_get_empty_slot(trans, &dst_iter,
 				BTREE_ID_subvolumes, POS_MIN, POS(0, U32_MAX));
@@ -563,11 +596,14 @@ int bch2_subvolume_create(struct btree_trans *trans, u64 inode,
 		return ret;
 
 	snapshot_subvols[0] = dst_iter.pos.offset;
+	// 备注：新子卷 ID
 	snapshot_subvols[1] = src_subvolid;
+	// 备注：源子卷 ID（如创建快照）
 
 	if (src_subvolid) {
 		/* Creating a snapshot: */
 
+		// 备注：创建快照模式：获取源子卷的快照 ID
 		src_subvol = bch2_bkey_get_mut_typed(trans, BTREE_ID_subvolumes, POS(0, src_subvolid),
 						     BTREE_ITER_cached, subvolume);
 		ret = PTR_ERR_OR_ZERO(src_subvol);
@@ -576,26 +612,35 @@ int bch2_subvolume_create(struct btree_trans *trans, u64 inode,
 		if (unlikely(ret))
 			return ret;
 
+		// 备注：源子卷的当前快照 ID 作为新快照的父节点
 		parent = le32_to_cpu(src_subvol->v.snapshot);
 	}
 
+	// 备注：创建快照节点（新子卷 + 源子卷，如创建快照）
 	try(bch2_snapshot_node_create(trans, parent, new_nodes,
 				      snapshot_subvols,
 				      src_subvolid ? 2 : 1));
 
+	// 备注：更新源子卷的快照 ID（开始 COW）
 	if (src_subvolid)
 		src_subvol->v.snapshot = cpu_to_le32(new_nodes[1]);
 
+	// 备注：分配并初始化新子卷的 btree 键值
 	new_subvol = errptr_try(bch2_bkey_alloc(trans, &dst_iter, 0, subvolume));
 
 	new_subvol->v.flags		= 0;
+	// 备注：新快照 ID
 	new_subvol->v.snapshot		= cpu_to_le32(new_nodes[0]);
+	// 备注：根 inode
 	new_subvol->v.inode		= cpu_to_le64(inode);
+	// 备注：创建来源
 	new_subvol->v.creation_parent	= cpu_to_le32(src_subvolid);
+	// 备注：路径父节点
 	new_subvol->v.fs_path_parent	= cpu_to_le32(parent_subvolid);
 	new_subvol->v.otime.lo		= cpu_to_le64(bch2_current_time(c));
 	new_subvol->v.otime.hi		= 0;
 
+	// 备注：设置子卷标志：只读、是否为快照
 	SET_BCH_SUBVOLUME_RO(&new_subvol->v, ro);
 	SET_BCH_SUBVOLUME_SNAP(&new_subvol->v, src_subvolid != 0);
 

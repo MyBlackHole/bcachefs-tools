@@ -6,8 +6,11 @@
 
 struct posix_acl;
 
+// 备注：创建临时文件 
 #define BCH_CREATE_TMPFILE		(1U << 0)
+// 备注：创建子卷 
 #define BCH_CREATE_SUBVOL		(1U << 1)
+// 备注：创建快照 
 #define BCH_CREATE_SNAPSHOT		(1U << 2)
 #define BCH_CREATE_SNAPSHOT_RO		(1U << 3)
 

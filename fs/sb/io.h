@@ -11,6 +11,7 @@
 
 #define BCH_SB_READ_SCRATCH_BUF_SIZE		4096
 
+// 备注：版本兼任性检查 
 static inline bool bch2_version_compatible(u16 version)
 {
 	return BCH_VERSION_MAJOR(version) <= BCH_VERSION_MAJOR(bcachefs_metadata_version_current) &&
@@ -67,6 +68,7 @@ struct bch_sb_field_ops {
 	void	(*to_text)(struct printbuf *, struct bch_fs *, struct bch_sb *, struct bch_sb_field *);
 };
 
+// 备注：bset 魔法字校驗 
 static inline __le64 bch2_sb_magic(struct bch_fs *c)
 {
 	__le64 ret;

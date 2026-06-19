@@ -74,6 +74,8 @@ DEFINE_FREE(bio_put, struct bio *, if (_T) bio_put(_T))
  * bch2_bio_map() will add it: physically contiguous buffers take one bvec,
  * vmalloc buffers take one bvec per page.
  */
+/* Userspace doesn't align allocations as nicely as the kernel allocators: */
+// 备注：用户空间并不像内核分配器那样很好地对齐分配： 
 static inline size_t buf_nr_bvecs(void *p, size_t len)
 {
 	return is_vmalloc_addr(p)
@@ -157,6 +159,7 @@ static inline void uuid_unparse_lower(u8 *uuid, char *out)
 #include <uuid/uuid.h>
 #endif
 
+// 备注：打印 uuid 
 static inline void pr_uuid(struct printbuf *out, u8 *uuid)
 {
 	char uuid_str[40];
@@ -597,6 +600,7 @@ static inline void memset_u64s_tail(void *s, int c, unsigned bytes)
 		&(_array)[(_pos)],					\
 		sizeof((_array)[0]) * ((_nr) - (_pos)))
 
+// 备注：在 darray 的中间插入项目: 
 #define array_insert_item(_array, _nr, _pos, _new_item)			\
 do {									\
 	__array_insert_item(_array, _nr, _pos);				\
@@ -604,6 +608,7 @@ do {									\
 	(_array)[(_pos)] = (_new_item);					\
 } while (0)
 
+// 备注：在 darray 的中间删除项目: 
 #define array_remove_items(_array, _nr, _pos, _nr_to_remove)		\
 do {									\
 	(_nr) -= (_nr_to_remove);					\

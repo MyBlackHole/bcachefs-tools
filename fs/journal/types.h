@@ -326,10 +326,12 @@ struct journal {
 	struct workqueue_struct *discard_wq;
 
 	/* Sequence number of most recent journal entry (last entry in @pin) */
+	// 备注：最新日志条目的序列号（@pin 中的最后一条条目）
 	atomic64_t		seq;
 
 	u64			seq_write_started;
 	/* seq, last_seq from the most recent journal entry successfully written */
+	// 备注：已成功写入最新日志条目的 seq 和 last_seq
 	u64			seq_ondisk;
 	u64			flushed_seq_ondisk;
 	u64			flushing_seq;
@@ -422,11 +424,15 @@ struct journal {
  * Embedded in struct bch_dev. First three fields refer to the array of journal
  * buckets, in bch_sb.
  */
+// 备注：嵌入在 struct bch_dev 中。
+// 备注：前三个字段引用 bch_sb 中的日志桶数组。
 struct journal_device {
 	/*
 	 * For each journal bucket, contains the max sequence number of the
 	 * journal writes it contains - so we know when a bucket can be reused.
 	 */
+	// 备注：对于每个日志存储桶，
+	// 备注：包含其包含的日志写入的最大序列号 - 因此我们知道何时可以重用存储桶。
 	u64			*bucket_seq;
 
 	unsigned		sectors_free;
@@ -434,10 +440,13 @@ struct journal_device {
 	/*
 	 * discard_idx <= dirty_idx_ondisk <= dirty_idx <= cur_idx:
 	 */
+	// 备注：下一个要丢弃的桶(已确保落盘?)
 	unsigned		discard_idx;		/* Next bucket to discard */
 	unsigned		dirty_idx_ondisk;
 	unsigned		dirty_idx;
+	// 备注：我们当前正在写入的日记存储桶
 	unsigned		cur_idx;		/* Journal bucket we're currently writing to */
+	// 备注：分配的日志桶数量。
 	unsigned		nr;
 
 	u64			*buckets;

@@ -55,8 +55,36 @@ static unsigned bch2_dirent_name_bytes(struct bkey_s_c_dirent d)
 		trailing_nuls;
 }
 
+// 备注：bch2_dirent_get_name - 从目录项键值中获取文件名
+// 备注：@d:	目录项键值（bkey_s_c_dirent）
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：从 bcachefs 目录项（dirent） btree 键值中提取文件名。
+// 备注：支持普通文件名和大小写折叠（casefold）文件名。
+// 备注：
+// 备注：【目录项结构】
+// 备注：
+// 备注：bcachefs 目录项结构（bch_dirent）包含：
+// 备注：- d_inum: 目标 inode 号
+// 备注：- d_type: 文件类型（文件/目录/链接等）
+// 备注：- d_name: 文件名（可变长度，以 null 结尾）
+// 备注：
+// 备注：【大小写折叠支持】
+// 备注：
+// 备注：当启用 Unicode casefold 时：
+// 备注：- d_casefold 标志为 true
+// 备注：- 存储两个版本：原始名称 + 折叠后名称
+// 备注：- 用于不区分大小写的文件查找
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：返回 struct qstr 结构，包含：
+// 备注：- name: 文件名指针
+// 备注：- len: 文件名长度（不包括 null 终止符）
 struct qstr bch2_dirent_get_name(struct bkey_s_c_dirent d)
 {
+	// 备注：检查是否启用了大小写折叠 
 	if (d.v->d_casefold) {
 		unsigned name_len = le16_to_cpu(d.v->d_cf_name_block.d_name_len);
 		return (struct qstr) QSTR_INIT(&d.v->d_cf_name_block.d_names[0], name_len);

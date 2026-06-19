@@ -121,6 +121,32 @@ static int btree_node_write_update_key(struct btree_trans *trans,
 					  !wbio->wbio.failed.nr);
 }
 
+// 备注：btree_node_write_work - btree 节点 IO 完成后处理阶段
+// 备注：
+// 备注：在 write_complete_wq workqueue 中执行（btree_node_write_endio 排队过来的）。
+// 备注：此阶段持有 btree 节点的读锁，负责更新 btree node key 和最终清理。
+// 备注：
+// 备注：执行流程：
+// 备注：  1. 更新 btree node key (btree_node_write_update_key):
+// 备注：     - 更新 sectors_written（写入后的大小）
+// 备注：     - 丢弃失败设备的指针（降级写入）
+// 备注：     - 通过 bch2_btree_node_update_key 提交到 journal
+// 备注：     - journal 已停止时跳过（不犯错误地重试）
+// 备注：
+// 备注：  2. 记录写入延迟到统计 (bch2_time_stats_update)
+// 备注：
+// 备注：  3. 释放 bio (bio_put)
+// 备注：
+// 备注：  4. 获取 btree 节点读锁后，调用 __btree_node_write_done：
+// 备注：     - 释放 journal pin
+// 备注：     - 清除 write_in_flight 标志
+// 备注：     - 可能 re-arm 新的一轮写入
+// 备注：
+// 备注：错误处理：
+// 备注：  · 写入部分失败（某些设备 IO 错误）：降级写入，标记 noevict
+// 备注：  · 全部失败（所有设备都写失败了）：紧急只读
+// 备注：  · journal 已停止：跳过 key update，只做 __btree_node_write_done
+// 备注：
 static void btree_node_write_work(struct work_struct *work)
 {
 	struct btree_write_bio *wbio =
@@ -188,6 +214,30 @@ static void btree_node_write_work(struct work_struct *work)
 	}));
 }
 
+// 备注：btree_node_write_endio - btree 节点 IO 完成回调
+// 备注：
+// 备注：与用户数据 IO 完成回调不同，btree 节点完成回调不仅是记录错误，
+// 备注：还负责 bounce buffer 的释放和 workqueue 排队。
+// 备注：
+// 备注：执行流程：
+// 备注：  1. 记录 IO 完成统计 (bch2_account_io_completion)
+// 备注：  2. 如果 IO 失败：记录设备错误到 orig->failed
+// 备注：  3. 释放设备 io_ref (在 data/write.c 中用 BCH_DEV_WRITE_REF_io_write，
+// 备注：     但这里用的是 BCH_DEV_READ_REF_btree_node_write — 见下文注释)
+// 备注：  4. 如果是 split bio：bio_put 子 bio 并 bio_endio 父 bio
+// 备注：     否则继续 5-6
+// 备注：  5. 释放 bounce buffer (bch2_btree_bounce_free)
+// 备注：  6. 递减 nr_in_flight_inner，唤醒等待者
+// 备注：  7. 清除 BTREE_NODE_write_in_flight_inner 标志
+// 备注：  8. 排队到 write_complete_wq 执行后续处理
+// 备注：
+// 备注：关键设计：
+// 备注：  · io_ref 使用 READ 计数而非 WRITE（代码中有 XXX 注释说明这是已知问题）
+// 备注：  · write_in_flight 分为 inner 和 outer 两级：
+// 备注：    inner 在此释放，outer 在 __btree_node_write_done 释放
+// 备注：    两级设计允许 inner 完成后立即释放资源，不等 outer 清理完毕
+// 备注：  · 排队到 write_complete_wq 而非直接执行，以避免在块层完成上下文中阻塞
+// 备注：
 static void btree_node_write_endio(struct bio *bio)
 {
 	struct bch_write_bio *wbio	= to_wbio(bio);
@@ -312,6 +362,9 @@ void __bch2_btree_node_write(struct btree_trans *trans, struct btree *b, unsigne
 	 * dirty bit requires a write lock, we can't race with other threads
 	 * redirtying it:
 	 */
+	// 备注：我们可能只在 btree 节点上有一个读锁 - 脏位是我们的“锁”，
+	// 备注：防止与可能尝试开始写入的其他线程竞争，如果我们清除了脏位，我们就会执行写入操作。
+	// 备注：由于设置脏位需要写锁，因此我们不能与其他线程竞争重新脏位：
 	old = READ_ONCE(b->flags);
 	do {
 		new = old;
@@ -378,26 +431,33 @@ do_write:
 	BUG_ON(le64_to_cpu(b->data->magic) != bset_magic(c));
 	BUG_ON(memcmp(&b->data->format, &b->format, sizeof(b->format)));
 
+	// 备注：先排序 whiteout 掉的 bkeys 进行排序
 	bch2_sort_whiteouts(c, b);
 
 	sort_iter_stack_init(&sort_iter, b);
 
+	// 备注：计算需要写的大小
 	bytes = !b->written
 		? sizeof(struct btree_node)
 		: sizeof(struct btree_node_entry);
 
 	bytes += b->whiteout_u64s * sizeof(u64);
 
+	// 备注：遍历 bset_tree
 	for_each_bset(b, t) {
+		// 备注：获取 bset_tree 的 bset 数据
 		i = bset(b, t);
 
 		if (bset_written(b, i))
+			// 备注：写了跳过 i
 			continue;
 
 		bytes += le16_to_cpu(i->u64s) * sizeof(u64);
+		// 备注：添加需要排序的 bkey_packed 范围
 		sort_iter_add(&sort_iter.iter,
 			      btree_bkey_first(b, t),
 			      btree_bkey_last(b, t));
+		// 备注：获取日志最大序号
 		seq = max(seq, le64_to_cpu(i->journal_seq));
 	}
 
@@ -409,6 +469,7 @@ do_write:
 	/* buffer must be a multiple of the block size */
 	bytes = round_up(bytes, block_bytes(c));
 
+	// 备注：分配空间
 	data = bch2_btree_bounce_alloc(c, bytes, &used_mempool);
 
 	if (!b->written) {
@@ -424,12 +485,14 @@ do_write:
 	i->journal_seq	= cpu_to_le64(seq);
 	i->u64s		= 0;
 
+	// 备注：whiteout 也添加到排序迭代
 	sort_iter_add(&sort_iter.iter,
 		      unwritten_whiteouts_start(b),
 		      unwritten_whiteouts_end(b));
 	SET_BSET_SEPARATE_WHITEOUTS(i, false);
 
 	u64s = bch2_sort_keys_keep_unwritten_whiteouts(i->start, &sort_iter.iter);
+	// 备注：设置排序后大小
 	le16_add_cpu(&i->u64s, u64s);
 
 	b->whiteout_u64s = 0;
@@ -439,16 +502,20 @@ do_write:
 	bch2_set_bset_needs_whiteout(i, false);
 
 	/* do we have data to write? */
+	// 备注：我们有数据要写吗？
 	if (b->written && !i->u64s)
 		goto nowrite;
 
+	// 备注：需要写入的大小
 	bytes_to_write = vstruct_end(i) - data;
+	// 备注：块对齐 to 扇区
 	sectors_to_write = round_up(bytes_to_write, block_bytes(c)) >> 9;
 
 	if (!b->written &&
 	    b->key.k.type == KEY_TYPE_btree_ptr_v2)
 		BUG_ON(btree_ptr_sectors_written(bkey_i_to_s_c(&b->key)) != sectors_to_write);
 
+	// 备注：多余部分填充 0
 	memset(data + bytes_to_write, 0,
 	       (sectors_to_write << 9) - bytes_to_write);
 
@@ -468,6 +535,7 @@ do_write:
 		validate_before_checksum = true;
 
 	/* if we're going to be encrypting, check metadata validity first: */
+	// 备注：如果我们不加密，则在校验和后检查元数据：
 	if (validate_before_checksum &&
 	    validate_bset_for_write(c, b, i))
 		goto err;
@@ -530,6 +598,7 @@ do_write:
 				GFP_NOFS,
 				&c->btree.bio),
 			    struct btree_write_bio, wbio.bio);
+	// 备注：构建初始化 bio
 	wbio_init(&wbio->wbio.bio);
 	wbio->data			= data;
 	wbio->data_bytes		= bytes;
@@ -541,6 +610,7 @@ do_write:
 	wbio->wbio.bio.bi_end_io	= btree_node_write_endio;
 	wbio->wbio.bio.bi_private	= b;
 
+	// 备注：构建 bio 數據映射
 	bch2_bio_map(&wbio->wbio.bio, data, sectors_to_write << 9);
 
 	bkey_copy(&wbio->key, &b->key);

@@ -38,6 +38,7 @@ int bch2_run_thread_with_file(struct thread_with_file *thr,
 	get_task_comm(name, current);
 
 	thr->ret = 0;
+	// 备注：创建内核线程 
 	thr->task = kthread_create(fn, thr, "%s", name);
 	ret = PTR_ERR_OR_ZERO(thr->task);
 	if (ret)
@@ -54,6 +55,7 @@ int bch2_run_thread_with_file(struct thread_with_file *thr,
 		goto err;
 
 	get_task_struct(thr->task);
+	// 备注：唤醒内核线程 
 	wake_up_process(thr->task);
 	fd_install(fd, file);
 	return fd;

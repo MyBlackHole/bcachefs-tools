@@ -11,8 +11,10 @@ struct bch_sb_handle_holder {
 struct bch_sb_handle {
 	struct bch_sb		*sb;
 	struct file		*s_bdev_file;
+	// 备注：块设备 
 	struct block_device	*bdev;
 	char			*sb_name;
+	// 备注：块 io 对象 
 	struct bio		*bio;
 	struct bch_sb_handle_holder *holder;
 	size_t			buffer_size;

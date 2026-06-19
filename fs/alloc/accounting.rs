@@ -1,3 +1,19 @@
+// ============================================
+// 备注：磁盘记账（Disk Accounting）编码和解码
+//
+// 备注：bcachefs 的 accounting 使用 bpos（B-tree 键的 3 元组位置）来编码
+// 备注：多种统计数据类型。这是 bcachefs 无日志记账（log-less accounting）
+// 备注：的核心实现：
+//
+// 备注：  DiskAccountingPos:  bpos 包装，在 bpos 的字节中编码 accounting 类型
+// 备注：  DiskAccountingKind: decode() 后的类型化枚举，可直接 match
+//
+// 备注：记账类型（存储在 bpos 的高位字节中，字节序反转）：
+// 备注：  - data_type:        per-data-type 统计（btree、extent、journal 等）
+// 备注：  - compression_type: 压缩类型的空间统计
+// 备注：  - reconcile_type:   一致性校验记账
+// 备注：  - rebalance:        rebalance 进度统计
+// ============================================
 use crate::c;
 use crate::fs::Fs;
 
@@ -308,3 +324,4 @@ pub fn data_type_is_empty(t: bch_data_type) -> bool {
 pub fn data_type_is_hidden(t: bch_data_type) -> bool {
     t == data_type::sb || t == data_type::journal
 }
+

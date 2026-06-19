@@ -908,13 +908,157 @@ static u64 journal_seq_to_flush(struct journal *j)
  * 512 journal entries or 25% of all journal buckets, then
  * journal_next_bucket() should not stall.
  */
+// 备注：============================================================================
+// 备注：日志回收核心函数 - __bch2_journal_reclaim
+// 备注：============================================================================
+// 备注：
+// 备注：【函数定位】
+// 备注：
+// 备注：日志回收是 bcachefs 中关键的资源管理功能。当日志空间不足时，
+// 备注：需要将脏 B 树节点写回磁盘以释放日志桶 (journal buckets)。
+// 备注：
+// 备注：【核心概念】
+// 备注：
+// 备注：1. Journal Pin (日志固定):
+// 备注：   - B 树节点修改时，会在日志中创建一个 pin
+// 备注：   - Pin 阻止对应的日志空间被回收
+// 备注：   - 节点写回后，pin 被释放
+// 备注：
+// 备注：2. Seq (序列号):
+// 备注：   - 每个日志条目有唯一的序列号
+// 备注：   - 节点写回时必须确保其依赖的日志已持久化
+// 备注：   - seq_to_flush: 需要刷新的最旧序列号
+// 备注：
+// 备注：3. 水位线 (Watermarks):
+// 备注：   - 高水位: 触发后台回收 (后台线程)
+// 备注：   - 低水位: 触发前台回收 (同步阻塞)
+// 备注：   - 安全边界确保不会完全耗尽空间
+// 备注：
+// 备注：【调用路径】
+// 备注：
+// 备注：1. 后台回收 (后台线程):
+// 备注：   bch2_journal_reclaim_thread() → __bch2_journal_reclaim(direct=false)
+// 备注：
+// 备注：2. 前台回收 (同步):
+// 备注：   journal_next_bucket() (空间不足时)
+// 备注：   → bch2_journal_reclaim() → __bch2_journal_reclaim(direct=true)
+// 备注：
+// 备注：3. 强制回收 (被踢时):
+// 备注：   journal_write() → kick_reclaim()
+// 备注：   → bch2_journal_reclaim_thread() → __bch2_journal_reclaim(kicked=true)
+// 备注：
+// 备注：【回收流程详解】
+// 备注：
+// 备注：1. 前置检查:
+// 备注：   - 检查日志错误状态
+// 备注：   - 计算 seq_to_flush (需要刷新的最旧序列号)
+// 备注：   - 确定最小刷新数量 (min_nr 和 min_key_cache)
+// 备注：
+// 备注：2. 触发条件判断 (确定 min_nr):
+// 备注：   ```
+// 备注：   min_nr = 0 (默认不刷新)
+// 备注：
+// 备注：   // 时间触发
+// 备注：   if (距离上次刷新 > reclaim_delay_ms)
+// 备注：       min_nr = 1
+// 备注：
+// 备注：   // 空间不足触发
+// 备注：   if (journal_low_on_space())
+// 备注：       min_nr = 1
+// 备注：
+// 备注：   // 脏数据过多触发
+// 备注：   if (脏节点数 * 2 > 缓存总节点数)
+// 备注：       min_nr = 1
+// 备注：   ```
+// 备注：
+// 备注：3. 执行刷新:
+// 备注：   - 调用 journal_flush_pins() 刷写固定节点
+// 备注：   - 刷写 btree 键缓存 (min_key_cache)
+// 备注：   - 统计刷写数量 (nr_flushed)
+// 备注：
+// 备注：4. 循环直到满足条件:
+// 备注：   - 继续回收直到达到低水位线
+// 备注：   - 或直接回收时仅执行一轮
+// 备注：   - 或没有更多可刷写的节点
+// 备注：
+// 备注：【水位线详解】
+// 备注：
+// 备注：高水位线 (触发回收):
+// 备注：- FIFO 剩余条目 < 512
+// 备注：- 日志桶空闲 < 25%
+// 备注：
+// 备注：低水位线 (停止回收):
+// 备注：- FIFO 剩余条目 > 1024
+// 备注：- 日志桶空闲 > 50%
+// 备注：
+// 备注：【关键数据结构】
+// 备注：
+// 备注：- j->pin: Pin FIFO，存储所有未释放的 pin
+// 备注：- j->reclaim_lock: 回收互斥锁，防止并发回收
+// 备注：- bc->nr_dirty: 脏 B 树节点数量
+// 备注：- j->last_flushed: 上次刷新时间戳
+// 备注：- j->nr_direct_reclaim: 前台回收统计
+// 备注：- j->nr_background_reclaim: 后台回收统计
+// 备注：
+// 备注：【内存分配策略】
+// 备注：
+// 备注：使用 PF_MEMALLOC_NOFS 标志:
+// 备注：- 防止在持有 reclaim_lock 时触发内存回收
+// 备注：- 避免死锁: 内存回收需要日志回收来释放缓存
+// 备注：
+// 备注：【性能考虑】
+// 备注：
+// 备注：1. 后台回收:
+// 备注：   - 定期运行，平滑 IO 负载
+// 备注：   - 可冻结，支持系统休眠
+// 备注：
+// 备注：2. 前台回收:
+// 备注：   - 仅在空间紧张时触发
+// 备注：   - 同步等待，可能阻塞写操作
+// 备注：
+// 备注：3. 批量刷写:
+// 备注：   - 每次尽可能多刷写节点
+// 备注：   - 减少反复加锁解锁的开销
+// 备注：
+// 备注：【死锁避免】
+// 备注：
+// 备注：- 持有 reclaim_lock 时不做内存分配
+// 备注：- 日志错误时立即退出，不继续操作
+// 备注：- 后台线程可安全停止
+// 备注：
+// 备注：@j:		journal object
+// 备注：@direct:	direct or background reclaim?
+// 备注：@kicked:	requested to run since we last ran?
+// 备注：
+// 备注：Background journal reclaim writes out btree nodes. It should be run
+// 备注：early enough so that we never completely run out of journal buckets.
+// 备注：
+// 备注：High watermarks for triggering background reclaim:
+// 备注：- FIFO has fewer than 512 entries left
+// 备注：- fewer than 25% journal buckets free
+// 备注：
+// 备注：Background reclaim runs until low watermarks are reached:
+// 备注：- FIFO has more than 1024 entries left
+// 备注：- more than 50% journal buckets free
+// 备注：
+// 备注：As long as a reclaim can complete in the time it takes to fill up
+// 备注：512 journal entries or 25% of all journal buckets, then
+// 备注：journal_next_bucket() should not stall.
 static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 {
+	// 备注：通过journal获取文件系统上下文
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
+	// 备注：获取B树缓存管理结构
 	struct bch_fs_btree_cache *bc = &c->btree.cache;
+	// 备注：检查当前是否在内核线程上下文中
 	bool kthread = (current->flags & PF_KTHREAD) != 0;
+	// 备注：需要刷新的最旧日志序列号
 	u64 seq_to_flush;
+	// 备注：min_nr: 最少需要刷新的B树节点数
+	// 备注：min_key_cache: 最少需要刷新的键缓存数
+	// 备注：nr_flushed: 实际刷新的数量
 	size_t min_nr, min_key_cache, nr_flushed;
+	// 备注：返回值，0表示成功
 	int ret = 0;
 
 	/*
@@ -923,13 +1067,26 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 	 * (cleaning the caches), so we can't get stuck in memory reclaim while
 	 * we're holding the reclaim lock:
 	 */
+	// 备注：死锁避免：持有reclaim_lock时不应触发内存回收
+	// 备注：因为内存回收可能需要日志回收来释放缓存空间
+	// 备注：如我们在持有锁时进入内存回收，可能导致死锁
 	lockdep_assert_held(&j->reclaim_lock);
+	// 备注：设置内存分配标志为NOFS，防止在持有锁时进行文件系统相关的内存回收
+	// 备注：guard宏确保函数退出时自动恢复原始标志
 	guard(memalloc_flags)(PF_MEMALLOC_NOFS);
 
+	// 备注：主回收循环：持续回收直到满足退出条件
+	// 备注：循环条件：
+	// 备注：- min_nr || min_key_cache：仍有需要刷新的目标
+	// 备注：- nr_flushed：上次循环实际刷新了内容（如没有，说明无法继续）
+	// 备注：- !direct：后台模式才循环，前台模式只执行一次
 	do {
+		// 备注：检查后台线程是否应停止（如文件系统卸载）
 		if (kthread && kthread_should_stop())
 			break;
 
+		// 备注：检查日志错误状态
+		// 备注：如日志出现不可恢复错误，立即停止回收
 		ret = bch2_journal_error(j);
 		if (ret)
 			break;
@@ -937,28 +1094,47 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 		closure_wait_event(&bc->nr_in_flight_wait,
 				   atomic_long_read(&bc->nr_in_flight_inner) < BTREE_WRITE_IO_LIMIT(c));
 
+		// 备注：计算需要刷新的最旧序列号
+		// 备注：这是基于所有未完成的journal pin计算的
+		// 备注：返回最旧的、需要释放的pin对应的序列号
 		seq_to_flush = journal_seq_to_flush(j);
+		// 备注：初始化最少刷新数量为0（按需增加）
 		min_nr = 0;
 
 		/*
 		 * If it's been longer than j->reclaim_delay_ms since we last flushed,
 		 * make sure to flush at least one journal pin:
 		 */
+		// 备注：触发条件1：时间超过reclaim_delay_ms
+		// 备注：确保即使系统空闲，也定期刷新一些数据
+		// 备注：防止在长时间空闲后突然需要大量刷新
 		if (time_after(jiffies, j->last_flushed +
 			       msecs_to_jiffies(c->opts.journal_reclaim_delay)))
 			min_nr = 1;
 
+		// 备注：触发条件2：日志空间不足
+		// 备注：journal_low_on_space检查剩余日志桶是否低于阈值
+		// 备注：如空间不足，必须立即刷新以释放空间
 		if (journal_med_on_space(j))
 			min_nr = 1;
 
+		// 备注：触发条件3：B树缓存中脏数据过多
+		// 备注：计算：脏节点数 * 2 > 总缓存节点数
+		// 备注：即脏节点超过50%时触发回收
+		// 备注：这防止脏数据无限增长导致内存压力
 		size_t btree_cache_live = btree_cache_list_nr(&bc->live[0]) +
 					  btree_cache_list_nr(&bc->live[1]);
 		size_t btree_cache_dirty = bc->live[0].nr_dirty + bc->live[1].nr_dirty;
 		if (btree_cache_dirty * 2 > btree_cache_live)
 			min_nr = 1;
 
+		// 备注：计算需要刷新的键缓存数量
+		// 备注：取实际需要和128中的较小值
+		// 备注：限制单次刷新数量，避免单次操作耗时过长
 		min_key_cache = min(bch2_nr_btree_keys_need_flush(c), (size_t) 128);
 
+		// 备注：记录跟踪事件（用于性能分析和调试）
+		// 备注：包含：模式、缓存状态、刷新目标等信息
 		event_inc_trace(c, journal_reclaim_start, buf, ({
 			prt_printf(&buf, "direct %u kicked %u\n", direct, kicked);
 			prt_printf(&buf, "btree cache %zu/%zu min %zu\n",
@@ -969,20 +1145,37 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct, bool kicked)
 				   min_key_cache);
 		}));
 
+		// 备注：执行实际的刷新操作
+		// 备注：journal_flush_pins会：
+		// 备注：- 遍历所有seq <= seq_to_flush的journal pin
+		// 备注：- 刷写对应的B树节点
+		// 备注：- 返回实际刷写的节点数量
 		nr_flushed = journal_flush_pins(j, seq_to_flush,
 						~0, 0,
 						min_nr, min_key_cache);
 
+		// 备注：更新统计计数器
+		// 备注：区分前台回收（同步）和后台回收（异步）
 		if (direct)
 			j->nr_direct_reclaim += nr_flushed;
 		else
 			j->nr_background_reclaim += nr_flushed;
 
+		// 备注：记录完成事件
 		event_inc_trace(c, journal_reclaim_finish, buf,
 			prt_printf(&buf, "flushed %zu\n", nr_flushed));
 
+		// 备注：如实际刷新了数据，唤醒等待的线程
+		// 备注：可能有线程在等待日志空间或B树节点写回
 		if (nr_flushed)
 			wake_up(&j->reclaim_wait);
+
+		// 备注：循环继续条件：
+		// 备注：1. 仍有需要刷新的目标（min_nr > 0 或 min_key_cache > 0）
+		// 备注：2. 上次循环实际刷新了内容（nr_flushed > 0）
+		// 备注：   如没有刷新，说明没有可刷新的内容，应退出
+		// 备注：3. 不是前台模式（direct=false）
+		// 备注：   前台模式只执行一次，不循环
 	} while ((min_nr || min_key_cache) && nr_flushed && !direct);
 
 	return ret;
@@ -993,6 +1186,33 @@ int bch2_journal_reclaim(struct journal *j)
 	return __bch2_journal_reclaim(j, true, true);
 }
 
+// 备注：journal reclaim 线程 —— 单消费者回收 journal 空间。
+// 备注：
+// 备注：这是 journal 生产-消费模型的消费端（单线程）。
+// 备注：每 journal_reclaim_delay 毫秒唤醒一次，或通过 kicked 立即唤醒。
+// 备注：
+// 备注：回收流程:
+// 备注：  bch2_journal_reclaim_thread()
+// 备注：    ↓ 每 journal_reclaim_delay ms
+// 备注：  __bch2_journal_reclaim(j, false, kicked)
+// 备注：    ↓  遍历 pin fifo
+// 备注：  __bch2_journal_reclaim_one() / journal_pin_put()
+// 备注：    ↓  drop pin → 触发 btree node flush（如果有脏 btree）
+// 备注：    ↓  journal 条目写盘完成后回收
+// 备注：
+// 备注：直接回收（前台线程等不及的时候）:
+// 备注：  __bch2_journal_reclaim(j, direct=true, ...)
+// 备注：  由 bch2_journal_res_get_slowpath() → bch2_journal_reclaim() 调用。
+// 备注：  direct=true 时，单次执行不循环，确保前台线程获取到预留。
+// 备注：
+// 备注：多生产者（journal_res_get_fast）vs 单消费者（本线程）:
+// 备注：  生产者通过 atomic64_try_cmpxchg 无锁竞争，写入 journal buf。
+// 备注：  消费者（本线程）负责回收 pin 释放 journal 空间。
+// 备注：  当预留在 pin fifo 中积累过多时，新线程无法获取预留 → 阻塞。
+// 备注：  阻塞的线程会被 direct reclaim 唤醒，也可能触发 kicked。
+// 备注：
+// 备注：本线程在 nostart=true 时不运行（见 __bch2_fs_start() 中
+// 备注：kthread_run(bch2_journal_reclaim_thread) 被跳过）。
 static int bch2_journal_reclaim_thread(void *arg)
 {
 	struct journal *j = arg;

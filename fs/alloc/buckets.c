@@ -35,6 +35,7 @@
 
 #include <linux/preempt.h>
 
+// 备注：获取指定设备的bucket使用情况
 void bch2_dev_usage_read_fast(struct bch_dev *ca, struct bch_dev_usage *usage)
 {
 	memset(usage, 0, sizeof(*usage));
@@ -557,6 +558,7 @@ int bch2_bucket_ref_update(struct btree_trans *trans, struct bch_dev *ca,
 	return 0;
 }
 
+// 备注：帐户磁盘使用情况变更
 void bch2_trans_account_disk_usage_change(struct btree_trans *trans)
 {
 	struct bch_fs *c = trans->c;
@@ -952,6 +954,10 @@ int bch2_trigger_reservation(struct btree_trans *trans, struct btree_trigger_op 
 
 /* Mark superblocks: */
 
+// 备注：标记设备上的元数据块
+// 备注：b: 桶号
+// 备注：type: 标注类型
+// 备注：sectors: 扇区数
 static int __bch2_trans_mark_metadata_bucket(struct btree_trans *trans,
 				    struct bch_dev *ca, u64 b,
 				    enum bch_data_type type,
@@ -1267,6 +1273,7 @@ static void bucket_gens_free_rcu(struct rcu_head *rcu)
 }
 DEFINE_FREE(bucket_gens_free, struct bucket_gens *, if (_T) call_rcu(&_T->rcu, bucket_gens_free_rcu));
 
+// 备注：重置桶大小
 int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 {
 	struct bucket_gens *bucket_gens __free(bucket_gens_free) = NULL, *old_bucket_gens = NULL;
@@ -1301,6 +1308,7 @@ int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 	try(bch2_bucket_bitmap_resize(ca, &ca->bucket_backpointer_mismatch, ca->mi.nbuckets, nbuckets));
 	try(bch2_bucket_bitmap_resize(ca, &ca->bucket_backpointer_empty, ca->mi.nbuckets, nbuckets));
 
+	// 备注：修改指向
 	rcu_assign_pointer(ca->bucket_gens, bucket_gens);
 	bucket_gens	= old_bucket_gens;
 	nbuckets	= ca->mi.nbuckets;
@@ -1315,6 +1323,7 @@ void bch2_dev_buckets_free(struct bch_dev *ca)
 	free_percpu(ca->usage);
 }
 
+// 备注：设备桶分配
 int bch2_dev_buckets_alloc(struct bch_fs *c, struct bch_dev *ca)
 {
 	ca->usage = alloc_percpu(struct bch_dev_usage_full);

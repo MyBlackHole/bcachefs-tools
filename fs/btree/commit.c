@@ -1079,11 +1079,15 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	 * held, otherwise another thread could write the node changing the
 	 * amount of space available:
 	 */
+	// 备注：检查插入是否适合持有写锁的叶节点，
+	// 备注：否则另一个线程可能会写入该节点，
+	// 备注：从而改变可用空间量:
 
 	prefetch(&trans->c->journal.flags);
 
 	trans_for_each_update(trans, i) {
 		/* Multiple inserts might go to same leaf: */
+		// 备注：多个插入可能会进入同一个叶子:
 		if (!same_leaf_as_prev(trans, i))
 			u64s = 0;
 
@@ -1111,8 +1115,10 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	/*
 	 * Not allowed to fail after we've gotten our journal reservation - we
 	 * have to use it:
+	 *
 	 */
 
+	// 备注：在我们获得期刊预订后不允许失败 - 我们必须使用它：
 	if (IS_ENABLED(CONFIG_BCACHEFS_DEBUG) &&
 	    !(flags & BCH_TRANS_COMMIT_no_journal_res)) {
 		if (static_branch_unlikely(&bch2_journal_seq_verify))
@@ -1327,12 +1333,58 @@ static noinline int bch2_trans_commit_btree_write_ratelimit(struct btree_trans *
 	}));
 }
 
+// 备注：__bch2_trans_commit() - 事务提交核心函数
+// 备注：@trans: 要提交的事务
+// 备注：@flags: 提交标志位，控制提交行为
+// 备注：
+// 备注：Returns: 0 表示成功，负值错误码表示失败
+// 备注：
+// 备注：事务提交流程 (两阶段提交):
+// 备注：
+// 备注：===== 第一阶段: 准备与验证 =====
+// 备注：1. 验证事务状态(未解锁、未重启)
+// 备注：2. 故障注入测试(如启用 CONFIG_BCACHEFS_INJECT_TRANSACTION_RESTARTS)
+// 备注：3. 检查是否有待更新项(无则快速返回)
+// 备注：4. 运行事务性触发器(bch2_trans_commit_run_triggers)
+// 备注：   - 计算磁盘使用量变化
+// 备注：   - 执行各种元数据更新钩子
+// 备注：5. 过滤空操作(noop)更新
+// 备注：6. 检查文件系统读写状态
+// 备注：
+// 备注：===== 第二阶段: 执行提交 =====
+// 备注：1. 计算日志空间需求(journal_u64s)
+// 备注：   - 事务名记录(如启用)
+// 备注：   - 记账信息
+// 备注：   - 每个更新的键值对
+// 备注：   - 被覆盖的旧键值(调试)
+// 备注：2. 升级路径锁到写锁(bch2_btree_path_upgrade)
+// 备注：3. 预留磁盘空间(bch2_disk_reservation_add)
+// 备注：4. 预留日志空间(bch2_journal_res_get)
+// 备注：5. 执行实际插入(do_bch2_trans_commit):
+// 备注：   - 锁定所有涉及的 btree 节点(写锁)
+// 备注：   - 再次验证旧键值未改变
+// 备注：   - 运行原子触发器(BTREE_TRIGGER_atomic)
+// 备注：   - 将键插入 btree 节点(bch2_btree_insert_key_leaf)
+// 备注：   - 写入日志条目(bch2_journal_write_list_add)
+// 备注：6. 降级锁(bch2_trans_downgrade)
+// 备注：7. 清理更新状态(bch2_trans_reset_updates)
+// 备注：
+// 备注：错误处理:
+// 备注：- 任意阶段失败调用 bch2_trans_commit_error 处理
+// 备注：- 可恢复错误(如内存不足)会释放锁、重试
+// 备注：- 不可恢复错误返回错误码，事务回滚
+// 备注：
+// 备注：并发控制:
+// 备注：- 使用乐观锁: 假设冲突少，先执行后验证
+// 备注：- 锁升级策略: 先持意向锁，提交时升级写锁
+// 备注：- 如升级失败返回 RESTART，由 lockrestart_do 重试
 int __bch2_trans_commit(struct btree_trans *trans, enum bch_trans_commit_flags flags)
 {
 	struct btree_insert_entry *errored_at = NULL;
 	struct bch_fs *c = trans->c;
 	int ret = 0;
 
+	// 备注：验证事务状态: 必须已加锁且未重启
 	bch2_trans_verify_not_unlocked_or_in_restart(trans);
 
 	ret = trans_maybe_inject_restart(trans, _RET_IP_);

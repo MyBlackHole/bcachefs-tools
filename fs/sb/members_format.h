@@ -48,10 +48,15 @@ enum bch_member_error_type {
 #define __nonstring
 #endif
 
+// 备注：设备成员描述结构 
 struct bch_member {
 	__uuid_t		uuid;
+	// 备注：设备大小
+	// 备注：fs_size / bucket_size
 	__le64			nbuckets;	/* device size */
+	// 备注：使用的第一个桶的索引 
 	__le16			first_bucket;   /* index of first bucket used */
+	// 备注：扇区大小 
 	__le16			bucket_size;	/* sectors */
 	__u8			btree_bitmap_shift;
 	__u8			pad[3];

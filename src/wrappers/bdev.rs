@@ -1,3 +1,14 @@
+// ============================================
+// 备注：块设备工具函数
+//
+// 备注：纯 Rust 替代 tools-util.c 中的 get_size() / get_blocksize() / fd_to_dev_model()。
+// 备注：同时支持块设备 fd 和普通文件 fd。
+//
+// 备注：BLKGETSIZE64（获取设备字节大小，0x80081272）
+// 备注：BLKPBSZGET（物理块大小，通常是 4K）
+// 备注：BLKSSZGET（逻辑块大小，通常是 512）
+// ============================================
+//
 // SPDX-License-Identifier: GPL-2.0
 
 //! Block device utilities.
@@ -170,3 +181,4 @@ fn fd_metadata(fd: RawFd) -> Metadata {
         }
     }
 }
+

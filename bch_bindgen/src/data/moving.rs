@@ -1,3 +1,18 @@
+// ============================================
+// 备注：Moving Context — 后台数据移动流程
+//
+// 备注：Moving Context 负责三种数据移动场景：
+// 备注：  1. Copy-on-Write（COW）：已有数据的间接指针被重新写入
+// 备注：  2. Rebalance：改变数据的 replica 数量或压缩级别
+// 备注：  3. 数据迁移：在设备之间移动数据
+//
+// 备注：核心架构：
+// 备注：  moving_context 包含自引用的 list_head（init 后不可移动），
+// 备注：  所以必须 Box pin 后在堆上原地初始化。
+//
+// 备注：使用 moving_io 池（固定数量的并行写入槽位）来控制并发。
+// ============================================
+//
 // RAII wrapper for bch2_moving_ctxt_init / bch2_moving_ctxt_exit.
 //
 // The moving_context struct contains embedded list_heads that become
@@ -71,3 +86,4 @@ impl Drop for MovingContext {
         unsafe { c::bch2_moving_ctxt_exit(&mut *self.raw.as_mut().get_unchecked_mut()) }
     }
 }
+

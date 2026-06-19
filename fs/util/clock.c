@@ -110,6 +110,7 @@ void bch2_kthread_io_clock_wait(struct io_clock *clock,
 		cpu_timeout = bch2_kthread_io_clock_wait_once(clock, io_until, cpu_timeout);
 }
 
+// 备注：获取过期定时器 
 static struct io_timer *get_expired_timer(struct io_clock *clock, u64 now)
 {
 	struct io_timer *ret = NULL;

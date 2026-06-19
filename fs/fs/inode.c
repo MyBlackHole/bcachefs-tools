@@ -84,6 +84,31 @@ static int inode_decode_field(const u8 *in, const u8 *end,
 	return bytes;
 }
 
+// 备注：bch2_inode_pack_inlined - 将未打包的inode结构打包为btree键值格式（内联版本）
+// 备注：@packed:	输出的打包后inode缓冲区
+// 备注：@inode:		输入的未打包inode结构
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是inode打包的核心函数，将内存中的未打包inode结构转换为btree存储格式。
+// 备注：打包过程使用变长编码压缩字段，减少存储空间占用。
+// 备注：
+// 备注：【打包格式】
+// 备注：
+// 备注：bcachefs使用v3 inode格式，包含：
+// 备注：- 固定头部：inum, mode, flags, size等基本字段
+// 备注：- 变长字段区：使用变长整数编码的可选字段
+// 备注：- 字段采用稀疏存储，值为0的字段不占用空间
+// 备注：
+// 备注：【压缩策略】
+// 备注：
+// 备注：1. 变长整数编码：小数值使用较少字节
+// 备注：2. 稀疏存储：跳过后缀的零值字段
+// 备注：3. 字段排序：按访问频率排序，常用字段靠前
+// 备注：
+// 备注：【调试验证】
+// 备注：
+// 备注：在DEBUG模式下，函数会解包验证，确保打包/解包一致性。
 static inline void bch2_inode_pack_inlined(struct bch_fs *c, struct bkey_inode_buf *packed,
 					   const struct bch_inode_unpacked *inode)
 {
@@ -95,7 +120,10 @@ static inline void bch2_inode_pack_inlined(struct bch_fs *c, struct bkey_inode_b
 	unsigned bytes;
 	int ret;
 
+	// 备注：初始化inode v3键值
 	bkey_inode_v3_init(&packed->inode.k_i);
+
+	// 备注：填充固定头部字段
 	packed->inode.k.p.offset	= inode->bi_inum;
 	packed->inode.v.bi_journal_seq	= cpu_to_le64(inode->bi_journal_seq);
 	packed->inode.v.bi_hash_seed	= inode->bi_hash_seed;
@@ -440,6 +468,7 @@ static noinline void bch2_inode_unpack_slowpath(struct bch_fs *c, struct bkey_s_
 	}
 }
 
+// 备注：key 拆包给赋值 unpacked
 void bch2_inode_unpack(struct bch_fs *c, struct bkey_s_c k,
 		       struct bch_inode_unpacked *unpacked)
 {
@@ -449,6 +478,37 @@ void bch2_inode_unpack(struct bch_fs *c, struct bkey_s_c k,
 		bch2_inode_unpack_slowpath(c, k, unpacked);
 }
 
+// 备注：__bch2_inode_peek_snapshot - 在btree中查找并读取inode（内部函数）
+// 备注：@trans:	btree事务
+// 备注：@iter:		输出参数，指向inode的迭代器
+// 备注：@inode:		输出的inode结构（未打包格式）
+// 备注：@inum:		要查找的inode编号和子卷
+// 备注：@flags:		迭代器标志
+// 备注：@warn:		警告信息前缀（可为NULL）
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是inode查找的核心内部函数，负责从inodes btree中读取指定inode的信息。
+// 备注：函数处理子卷快照映射、迭代器初始化和inode解包。
+// 备注：
+// 备注：【查找流程】
+// 备注：
+// 备注：1. 获取子卷的快照ID（用于COW隔离）
+// 备注：2. 初始化inodes btree迭代器，定位到指定位置
+// 备注：3. 读取btree槽位的键值
+// 备注：4. 验证键值类型是否为inode
+// 备注：5. 解包inode数据到未打包结构
+// 备注：
+// 备注：【缓存优化】
+// 备注：
+// 备注：使用BTREE_ITER_cached标志，利用btree的键缓存机制，
+// 备注：加速频繁访问的inode查找。
+// 备注：
+// 备注：【错误处理】
+// 备注：
+// 备注：- ENOENT_inode: inode不存在或类型不匹配
+// 备注：- 其他错误: btree遍历或解包错误
+// 备注：- 如提供warn参数，错误时会打印详细信息
 int __bch2_inode_peek_snapshot(struct btree_trans *trans,
 			       struct btree_iter *iter,
 			       struct bch_inode_unpacked *inode,
@@ -457,18 +517,23 @@ int __bch2_inode_peek_snapshot(struct btree_trans *trans,
 {
 	bch2_trans_iter_init(trans, iter, BTREE_ID_inodes, SPOS(0, inum.inum, snapshot),
 			     flags|BTREE_ITER_cached);
+
+	// 备注：读取btree槽位的键值
 	struct bkey_s_c k = bch2_btree_iter_peek_slot(iter);
 	int ret = bkey_err(k);
 	if (ret)
 		goto err;
 
+	// 备注：验证键值类型是否为inode
 	ret = bkey_is_inode(k.k) ? 0 : bch_err_throw(trans->c, ENOENT_inode);
 	if (ret)
 		goto err;
 
+	// 备注：解包inode数据到未打包结构
 	bch2_inode_unpack(trans->c, k, inode);
 	return 0;
 err:
+	// 备注：如提供了警告前缀，打印详细的错误信息
 	if (warn)
 		bch_err_msg(trans->c, ret, "%s(): looking up inum %llu:%llu:",
 			    warn, inum.subvol, inum.inum);
@@ -520,10 +585,44 @@ int __bch2_inode_find_by_inum_trans(struct btree_trans *trans,
 	return __bch2_inode_peek(trans, &iter, inode, inum, 0, warn);
 }
 
+// 备注：bch2_inode_find_by_inum - 通过inode编号查找inode（便捷接口）
+// 备注：@c:		文件系统实例
+// 备注：@inum:		inode编号和子卷
+// 备注：@inode:		输出的inode结构（未打包格式）
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是查找inode的便捷接口函数，自动创建事务并处理事务重启。
+// 备注：适用于简单的inode查找场景，不需要手动管理事务。
+// 备注：
+// 备注：【使用场景】
+// 备注：
+// 备注：- 文件系统操作前的inode验证
+// 备注：- 获取inode元数据（大小、权限、时间戳等）
+// 备注：- 路径解析过程中的inode查找
+// 备注：
+// 备注：【事务管理】
+// 备注：
+// 备注：函数自动创建临时事务，使用lockrestart_do宏处理可能的事务重启。
+// 备注：调用者无需关心事务的生命周期管理。
+// 备注：
+// 备注：【性能考虑】
+// 备注：
+// 备注：对于频繁的inode查找，建议在调用者的事务中使用__bch2_inode_peek，
+// 备注：避免重复创建事务的开销。
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：- 0: 成功，inode结构填充完成
+// 备注：- -ENOENT_inode: 指定的inode不存在
+// 备注：- 其他负值: 错误码
 int bch2_inode_find_by_inum(struct bch_fs *c, subvol_inum inum,
 			    struct bch_inode_unpacked *inode)
 {
+	// 备注：创建临时事务
 	CLASS(btree_trans, trans)(c);
+
+	// 备注：使用lockrestart_do自动处理事务重启
 	return lockrestart_do(trans, bch2_inode_find_by_inum_trans(trans, inum, inode));
 }
 
@@ -548,15 +647,55 @@ int bch2_inode_find_oldest_snapshot(struct btree_trans *trans, u64 inum, u32 sna
 	return ret ?: bch_err_throw(trans->c, ENOENT_inode);
 }
 
+// 备注：bch2_inode_write_flags - 将inode写回btree（带标志）
+// 备注：@trans:	btree事务
+// 备注：@iter:		指向inode的btree迭代器
+// 备注：@inode:		要写入的inode（未打包格式）
+// 备注：@flags:		更新标志
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是inode更新的核心函数，将内存中的inode结构打包并写入btree。
+// 备注：支持触发器标志控制，用于不同的更新场景。
+// 备注：
+// 备注：【打包流程】
+// 备注：
+// 备注：1. 在事务内存中分配inode缓冲区
+// 备注：2. 将未打包的inode结构打包为btree键值格式
+// 备注：3. 设置快照ID（继承自迭代器）
+// 备注：4. 提交到事务更新队列
+// 备注：
+// 备注：【触发器处理】
+// 备注：
+// 备注：根据flags参数，可能触发：
+// 备注：- 磁盘配额更新
+// 备注：- 统计信息更新
+// 备注：- 索引节点计数更新
+// 备注：
+// 备注：【使用场景】
+// 备注：
+// 备注：- 修改inode元数据后写回
+// 备注：- 更新文件大小、时间戳
+// 备注：- 设置inode标志
+// 备注：
+// 备注：【注意】
+// 备注：
+// 备注：此函数不立即提交事务，只是将更新加入事务队列。
+// 备注：需要调用bch2_trans_commit()才能真正持久化。
 int bch2_inode_write_flags(struct btree_trans *trans,
 		     struct btree_iter *iter,
 		     struct bch_inode_unpacked *inode,
 		     enum btree_iter_update_trigger_flags flags)
 {
+	// 备注：在事务内存中分配inode键值缓冲区
 	struct bkey_inode_buf *inode_p = errptr_try(bch2_trans_kmalloc(trans, sizeof(*inode_p)));
 
+	// 备注：将未打包的inode打包为btree键值格式
 	bch2_inode_pack_inlined(trans->c, inode_p, inode);
+	// 备注：设置键值的快照ID（用于COW隔离）
 	inode_p->inode.k.p.snapshot = iter->snapshot;
+
+	// 备注：提交到事务更新队列
 	return bch2_trans_update(trans, iter, &inode_p->inode.k_i, flags);
 }
 
@@ -908,18 +1047,21 @@ __cold void bch2_inode_generation_to_text(struct printbuf *out, struct bch_fs *c
 	prt_printf(out, "generation: %u", le32_to_cpu(gen.v->bi_generation));
 }
 
+// 备注：bch_inode 初始化
 void bch2_inode_init_early(struct bch_fs *c,
 			   struct bch_inode_unpacked *inode_u)
 {
 	enum bch_str_hash_type str_hash =
 		bch2_str_hash_opt_to_type(c, c->opts.str_hash);
 
+	// 备注：内存初始化
 	memset(inode_u, 0, sizeof(*inode_u));
 
 	SET_INODE_STR_HASH(inode_u, str_hash);
 	get_random_bytes(&inode_u->bi_hash_seed, sizeof(inode_u->bi_hash_seed));
 }
 
+// 备注：初始化 inode 数据包
 void bch2_inode_init_late(struct bch_fs *c,
 			  struct bch_inode_unpacked *inode_u, u64 now,
 			  uid_t uid, gid_t gid, umode_t mode, dev_t rdev,
@@ -1095,25 +1237,73 @@ bch2_inode_alloc_cursor_get(struct btree_trans *trans, u64 *min, u64 *max,
 /*
  * This just finds an empty slot:
  */
+// 备注：bch2_inode_create - 在btree中分配新的inode号
+// 备注：@trans:	btree事务
+// 备注：@iter:		输出参数，指向新inode位置的迭代器
+// 备注：@inode_u:	要填充的inode结构（输出）
+// 备注：@snapshot:	快照ID（用于COW）
+// 备注：@cpu:		CPU编号（用于inode分片）
+// 备注：@is_32bit:	是否使用32位inode号
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是inode分配的核心函数，负责在inodes btree中查找并分配一个未使用的inode号。
+// 备注：使用分片策略避免多CPU并发分配时的冲突。
+// 备注：
+// 备注：【分配策略】
+// 备注：
+// 备注：1. 分片分配：
+// 备注：- 根据cpu参数将inode号空间划分为多个片段
+// 备注：- 每个CPU从其指定范围内分配inode号
+// 备注：- 减少多CPU并发时的锁竞争
+// 备注：
+// 备注：2. 世代号管理：
+// 备注：- 使用inode_generation btree记录每个inode号的世代号
+// 备注：- 当inode号回绕时，增加世代号
+// 备注：- 防止新创建的inode与已删除的inode混淆
+// 备注：
+// 备注：3. 查找空位：
+// 备注：- 遍历inodes btree查找空槽位
+// 备注：- 考虑快照祖先关系（同快照的不同版本）
+// 备注：- 跳过已分配的inode号
+// 备注：
+// 备注：【参数说明】
+// 备注：
+// 备注：@cpu: 用于计算分片范围，通常为当前CPU编号
+// 备注：@is_32bit: 如为true，分配32位范围内的inode号（兼容性模式）
+// 备注：@snapshot: 新inode所属的快照，用于COW隔离
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：- 0: 成功，iter指向新inode的位置，inode_u填充了inode号
+// 备注：- -ENOSPC: inode号耗尽
+// 备注：- 其他负值: 错误码
 int bch2_inode_create(struct btree_trans *trans,
 		      struct btree_iter *iter,
 		      struct bch_inode_unpacked *inode_u,
 		      u32 snapshot, bool is_32bit)
 {
 	u64 min, max;
+	// 备注：获取或创建inode分配游标，确定分配范围
 	struct bkey_i_inode_alloc_cursor *cursor =
 		errptr_try(bch2_inode_alloc_cursor_get(trans, &min, &max, is_32bit));
 
+	// 备注：从游标记录的当前位置开始分配
 	u64 start = le64_to_cpu(cursor->v.idx);
 	u64 pos = start;
 
+	// 备注：初始化迭代器，遍历inodes btree查找空槽位
 	bch2_trans_iter_init(trans, iter, BTREE_ID_inodes, POS(0, pos),
 			     BTREE_ITER_all_snapshots|
 			     BTREE_ITER_intent);
+	// 备注：外层循环：处理inode号回绕的情况
 	while (1) {
 		while (pos < max) {
+			// 备注：内层循环：在当前范围内查找可用的inode号
 			struct bkey_s_c k = bkey_try(bch2_btree_iter_peek_max(iter, &SPOS(0, pos, U32_MAX)));
 
+			// 备注：检查是否是当前快照的祖先快照中的inode_generation记录
+			// 备注：这用于获取该inode号的最新世代号
 			if (!k.k ||
 			    (k.k->type == KEY_TYPE_inode_generation &&
 			     bch2_snapshot_is_ancestor(trans, snapshot, k.k->p.snapshot))) {
@@ -1125,6 +1315,7 @@ int bch2_inode_create(struct btree_trans *trans,
 					inode_u->bi_generation = max(inode_u->bi_generation,
 							le32_to_cpu(bkey_s_c_to_inode_generation(k).v->bi_generation));
 
+				// 备注：设置迭代器到目标位置（指定快照）
 				bch2_btree_iter_set_pos(iter, SPOS(0, pos, snapshot));
 				try(bch2_btree_iter_traverse(iter));
 				return 0;

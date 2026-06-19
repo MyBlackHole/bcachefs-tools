@@ -132,6 +132,7 @@ static inline bool journal_low_on_space(struct journal *j)
 }
 
 /* Sequence number of oldest dirty journal entry */
+// 备注：最早的脏日志条目的序列号
 
 static inline u64 journal_cur_seq(struct journal *j)
 {
@@ -417,6 +418,8 @@ static inline void bch2_journal_buf_put(struct journal *j, u64 seq)
  * This function releases the journal write structure so other threads can
  * then proceed to add their keys as well.
  */
+// 备注：此函数释放日志写入结构，
+// 备注：以便其他线程也可以继续添加它们的键。
 static inline void bch2_journal_res_put(struct journal *j,
 				       struct journal_res *res)
 {
@@ -447,6 +450,28 @@ enum journal_res_flags {
 #define JOURNAL_RES_GET_NONBLOCK	(1 << __JOURNAL_RES_GET_NONBLOCK)
 #define JOURNAL_RES_GET_CHECK		(1 << __JOURNAL_RES_GET_CHECK)
 
+// 备注：journal 预留的锁无关快速路径 —— 核心的"多生产者"端。
+// 备注：
+// 备注：多生产者（多个前台线程同时调用 bch2_trans_commit()）:
+// 备注：每个线程要往 journal 插入条目前，必须先预留（reserve）空间。
+// 备注：reservations.counter 是一个 atomic64，其 cur_entry_offset 字段
+// 备注：标记当前 journal entry 中被占用的位置。
+// 备注：多个线程通过 atomic64_try_cmpxchg 无锁竞争预留。
+// 备注：成功 → 直接在自己的预留位置写入；失败 → 重试或走慢路径。
+// 备注：
+// 备注：单个消费者（journal reclaim 线程）:
+// 备注：journal 条目的回收由 bch2_journal_reclaim_thread 完成。
+// 备注：当预留空间占满时，新申请者会阻塞等待 reclaim 释放 pin。
+// 备注：见 bch2_journal_reclaim_thread() 和 __bch2_journal_reclaim()。
+// 备注：
+// 备注：整体是 lock-free multi-producer, single-consumer 模型：
+// 备注：  前台线程 N → cmpxchg → 写入 buf → [异步] → 前台写 btree
+// 备注：  前台线程 1（同一 buf 已满时）→ __journal_entry_close() → 写盘
+// 备注：  reclaim 线程 → __bch2_journal_reclaim() → 回收 journal 空间
+// 备注：
+// 备注：fallback 慢路径见 __journal_res_get() (journal.c)。
+// 备注：当 fast path 失败（buf 满 / watermark 不足 / refcount 溢出），
+// 备注：慢路径会加锁、尝试 cycle journal entry、后台回收等。
 static inline int journal_res_get_fast(struct journal *j,
 				       struct journal_res *res,
 				       unsigned flags)

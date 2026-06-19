@@ -235,6 +235,8 @@ int bch2_set_may_go_rw(struct bch_fs *c)
 	 * setting journal_key->overwritten: it will be accessed by multiple
 	 * threads
 	 */
+	// 备注：进入读写模式后，
+	// 备注：日志键缓冲区将无法修改（除了设置 journal_key->overwritten：它将被多个线程访问）。
 	move_gap(keys, keys->nr);
 
 	set_bit(BCH_FS_may_go_rw, &c->flags);
@@ -519,6 +521,7 @@ int bch2_journal_replay(struct bch_fs *c)
 }
 
 /* journal replay early: */
+// 备注：日记重播准备
 
 static int journal_replay_entry_early(struct bch_fs *c,
 				      struct jset_entry *entry)
@@ -540,6 +543,7 @@ static int journal_replay_entry_early(struct bch_fs *c,
 		while (entry->btree_id >= c->btree.cache.roots_extra.nr + BTREE_ID_NR)
 			try(darray_push(&c->btree.cache.roots_extra, (struct btree_root) { NULL }));
 
+		// 备注：取出 entry 里 btree_id 对应的的 btree_root 结构体
 		struct btree_root *r = bch2_btree_id_root(c, entry->btree_id);
 
 		r->level = entry->level;
@@ -606,6 +610,7 @@ static int journal_replay_early(struct bch_fs *c,
 			if (journal_replay_ignore(i))
 				continue;
 
+			// 备注：遍历 jset 里的 entry
 			vstruct_for_each(&i->j, entry)
 				try(journal_replay_entry_early(c, entry));
 		}
@@ -616,6 +621,7 @@ static int journal_replay_early(struct bch_fs *c,
 
 /* sb clean section: */
 
+// 备注：读取所有 btree_id btree 根节点
 static int read_btree_roots(struct bch_fs *c)
 {
 	CLASS(printbuf, buf)();
@@ -657,6 +663,7 @@ fsck_err:
 	return ret;
 }
 
+// 备注：进入recovery流程
 static int __bch2_fs_recovery(struct bch_fs *c)
 {
 	struct bch_sb_field_clean *clean __free(kfree) = NULL;
@@ -684,6 +691,7 @@ static int __bch2_fs_recovery(struct bch_fs *c)
 		struct journal_replay **i;
 
 		bch_verbose(c, "starting journal read");
+		// 备注：读取日志
 		try(bch2_journal_read(c, &journal_start));
 
 		/*
@@ -698,6 +706,7 @@ static int __bch2_fs_recovery(struct bch_fs *c)
 		 * it can asterisk ignored journal entries:
 		 */
 		if (c->opts.read_journal_only)
+			// 备注：只读取日志，不执行恢复流程
 			return 0;
 
 		if (mustfix_fsck_err_on(c->sb.clean && !journal_start.clean,
@@ -877,6 +886,7 @@ use_clean:
 		}
 	}
 
+	// 备注：执行文件系统检查与恢复
 	try(bch2_run_recovery_passes_startup(c, 0));
 
 	/*
@@ -914,6 +924,7 @@ use_clean:
 		bool saved_fixed        = test_and_clear_bit(BCH_FS_errors_fixed,        &c->flags);
 		bool saved_fixed_silent = test_and_clear_bit(BCH_FS_errors_fixed_silent, &c->flags);
 
+		// 备注：执行文件系统检查与恢复
 		try(bch2_run_recovery_passes_startup(c, BCH_RECOVERY_PASS_check_alloc_info));
 
 		if (test_bit(BCH_FS_errors_fixed,        &c->flags) ||
@@ -1008,6 +1019,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 	return ret;
 }
 
+// 备注：初始化新文件系统
 int bch2_fs_initialize(struct bch_fs *c)
 {
 	struct bch_inode_unpacked root_inode, lostfound_inode;
@@ -1016,10 +1028,12 @@ int bch2_fs_initialize(struct bch_fs *c)
 	int ret;
 
 	bch_notice(c, "initializing new filesystem");
+	// 备注：标记新文件系统状态
 	set_bit(BCH_FS_new_fs, &c->flags);
 
 	scoped_guard(memalloc_flags, PF_MEMALLOC_NOFS) {
 		guard(mutex)(&c->sb_lock);
+		// 备注：兼容功能启用标记
 		c->disk_sb.sb->compat[0] |= cpu_to_le64(BIT_ULL(BCH_COMPAT_extents_above_btree_updates_done));
 		c->disk_sb.sb->compat[0] |= cpu_to_le64(BIT_ULL(BCH_COMPAT_bformat_overflow_done));
 		c->disk_sb.sb->compat[0] |= cpu_to_le64(BIT_ULL(BCH_COMPAT_no_stale_ptrs));
@@ -1029,6 +1043,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 		if (c->opts.version_upgrade != BCH_VERSION_UPGRADE_none) {
 			bch2_sb_upgrade(c, bcachefs_metadata_version_current, false);
 			SET_BCH_SB_VERSION_UPGRADE_COMPLETE(c->disk_sb.sb, bcachefs_metadata_version_current);
+			// 备注：记录 sb 修改到磁盘
 			bch2_write_super(c);
 		}
 
@@ -1038,9 +1053,12 @@ int bch2_fs_initialize(struct bch_fs *c)
 			SET_BCH_MEMBER_INITIALIZED(m, BCH_MEMBER_INITIALIZED_pre_dev_usage);
 		}
 
+		// 备注：先记录一次先
+		// 备注：记录 sb 修改到磁盘
 		bch2_write_super(c);
 	}
 
+	// 备注：创建所有 btree_id 类型的根
 	for (unsigned i = 0; i < BTREE_ID_NR; i++)
 		bch2_btree_root_alloc_fake(c, i, 0);
 
@@ -1050,6 +1068,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 	 * Write out the superblock and journal buckets, now that we can do
 	 * btree updates
 	 */
+	// 备注：写出超级块和日志桶，现在我们可以进行 B 树更新
 	bch_verbose(c, "marking superblocks");
 	ret = bch2_trans_mark_dev_sbs(c);
 	bch_err_msg(c, ret, "marking superblocks");
@@ -1060,6 +1079,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 	 * journal_res_get() will crash if called before this has
 	 * set up the journal.pin FIFO and journal.cur pointer:
 	 */
+	// 备注：如果在设置 journal.pin FIFO 和 journal.cur 指针之前调用 journal_res_get()，则会崩溃：
 	struct journal_start_info journal_start = { .cur_seq = 1 };
 	try(bch2_fs_journal_start(&c->journal, journal_start));
 

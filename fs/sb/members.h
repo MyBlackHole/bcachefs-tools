@@ -159,6 +159,7 @@ static inline void __bch2_dev_put(struct bch_dev *ca)
 #endif
 }
 
+// 备注：减少设备引用计数 
 static inline void bch2_dev_put(struct bch_dev *ca)
 {
 	if (!IS_ERR_OR_NULL(ca))
@@ -222,6 +223,7 @@ static inline struct bch_dev *bch2_get_next_online_dev(struct bch_fs *c,
 	for (struct bch_dev *_ca = NULL;				\
 	     (_ca = bch2_get_next_online_dev(_c, _ca, state_mask, rw, ref_idx));)
 
+// 备注：遍历所有在线 bch_dev 成员 
 #define for_each_online_member(c, ca, ref_idx)				\
 	__for_each_online_member(c, ca, ~0, READ, ref_idx)
 

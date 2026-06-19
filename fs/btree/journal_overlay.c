@@ -87,6 +87,7 @@ static inline struct journal_key_range_overwritten *overwrite_range(struct journ
 }
 
 /* Returns first non-overwritten key >= search key: */
+// 备注：返回第一个未被覆盖的键 >= 搜索键:
 const struct bkey_i *bch2_journal_keys_peek_max(struct bch_fs *c, enum btree_id btree_id,
 						unsigned level, struct bpos pos,
 						struct bpos end_pos, size_t *idx)
@@ -361,6 +362,32 @@ insert:
 	return 0;
 }
 
+// 备注：btree key 的 journal覆盖层（journal overlay）插入函数。
+// 备注：
+// 备注：当 fs 处于 RO 或 nostart 模式时，btree 不直接写盘，所有 btree 修改
+// 备注：通过此函数暂存到 c->journal_keys[] 数组中。
+// 备注：这是 btree_test 中"数据存在哪儿"的答案所在。
+// 备注：
+// 备注：工作原理:
+// 备注：  1) bch2_journal_key_insert() → kmalloc + bkey_copy
+// 备注：  2) bch2_journal_key_insert_take() → 插入到 c->journal_keys 数组
+// 备注：     （D-array: darray 动态数组）
+// 备注：  3) 在 RO 模式下，btree_trans 读取时优先从 journal_keys 中查找
+// 备注：     （见 bch2_journal_key_search() 和 btree_trans 中的
+// 备注：     journal_replay_not_finished 标志位）
+// 备注：
+// 备注：数据生命周期:
+// 备注：  分配: bch2_journal_key_insert() → kmalloc(GFP_KERNEL)
+// 备注：  释放: bch2_journal_keys_put_initial() → kfree(data)
+// 备注：        在 bch2_fs_btree_exit() 中被调用
+// 备注：  注意: 只释放数组中的 key 元素，数组本身用 darray_exit() 释放
+// 备注：
+// 备注：限制（见原英文注释）:
+// 备注：  只能在 RO 模式（recovery 阶段）使用，RW 后有多个线程并发访问。
+// 备注：
+// 备注：调用者:
+// 备注：  fs/btree/commit.c: bch2_trans_commit() — 最常用的路径
+// 备注：  fs/btree/node_scan.c — recovery 时扫描 btree node
 /*
  * Can only be used from the recovery thread while we're still RO - can't be
  * used once we've got RW, as journal_keys is at that point used by multiple

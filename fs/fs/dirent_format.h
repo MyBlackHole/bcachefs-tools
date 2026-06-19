@@ -30,12 +30,14 @@ struct bch_dirent {
 	 * the filetype without having to do a stat()
 	 */
 #if defined(__LITTLE_ENDIAN_BITFIELD)
+	// 备注：目录项类型
 	__u8			d_type:5,
 				d_unused:2,
 				d_casefold:1;
 #elif defined(__BIG_ENDIAN_BITFIELD)
 	__u8			d_casefold:1,
 				d_unused:2,
+	// 备注：目录项类型
 				d_type:5;
 #endif
 
@@ -46,6 +48,7 @@ struct bch_dirent {
 		__le16		d_cf_name_len;
 		__u8		d_names[];
 	} d_cf_name_block __packed;
+	// 备注：目录项名
 	__DECLARE_FLEX_ARRAY(__u8, d_name);
 	} __packed;
 } __packed __aligned(8);

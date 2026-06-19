@@ -1,3 +1,18 @@
+// ============================================
+// 备注：LE64 位域读写（Bitmask）— C LE64_BITMASK 宏的 Rust 实现
+//
+// 备注：bcachefs 大量使用位域（bitfield）将多个字段压缩存储在一个 u64 中，
+// 备注：例如 superblock 的 flags 字段同时存储加密类型、同步模式等。
+// 备注：C 中通过 LE64_BITMASK 宏生成内联 getter/setter 函数。
+//
+// 备注：由于 bindgen 无法导出 C static inline 函数，本模块提供纯 Rust 等价实现。
+// 备注：所需的 OFFSET/BITS 常量由 bindgen 正确导出。
+//
+// 备注：bitmask_accessors! 宏生成类型安全的 getter/setter 方法：
+// 备注：  支持数组字段（如 bch_sb.flags[i]）和普通字段（如 bch_member.flags）
+// 备注：  每个 NAME 对应一对 (getter, setter) 方法
+// ============================================
+//
 // LE64 bitmask getter/setter — pure Rust equivalent of the C LE64_BITMASK macro.
 //
 // The C macro generates static inline getter/setter functions that bindgen can't
@@ -116,3 +131,4 @@ macro_rules! bitmask_accessors {
     // Base case — empty
     () => {};
 }
+

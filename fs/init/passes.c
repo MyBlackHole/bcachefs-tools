@@ -33,6 +33,7 @@
 #include "init/passes.h"
 #include "init/fs.h"
 
+// 备注：需要执行恢复的函数名数组
 const char * const bch2_recovery_passes[] = {
 #define x(_fn, ...)	#_fn,
 	BCH_RECOVERY_PASSES()
@@ -259,6 +260,7 @@ struct recovery_pass {
 	u64		depends;
 };
 
+// 备注：需要执行恢复的函数数组
 static const struct recovery_pass recovery_passes[] = {
 #define x(_fn, _id, _when, _depends, ...)	{	\
 	.fn		= bch2_##_fn,			\
@@ -267,6 +269,15 @@ static const struct recovery_pass recovery_passes[] = {
 	.depends	= _depends,			\
 },
 	BCH_RECOVERY_PASSES()
+	/* bch2_recovery_pass_empty   41
+	 * bch2_scan_for_btree_nodes  37
+	 * bch2_check_topology         4
+	 * bch2_accounting_read       39
+	 * bch2_alloc_read             0
+	 * bch2_stripes_read           1
+	 * bch2_initialize_subvolumes  2
+	 * bch2_snapshots_read         3
+	 * */
 #undef x
 };
 
@@ -489,6 +500,7 @@ int bch2_require_recovery_pass(struct bch_fs *c,
 	return ret;
 }
 
+// 备注：运行恢复函数
 static int bch2_run_recovery_pass(struct bch_fs *c, enum bch_recovery_pass pass)
 {
 	struct bch_fs_recovery *r = &c->recovery;
@@ -613,6 +625,7 @@ void bch2_run_async_recovery_passes(struct bch_fs *c)
 	enumerated_ref_put(&c->writes, BCH_WRITE_REF_async_recovery_passes);
 }
 
+// 备注：运行恢复函数
 int bch2_run_recovery_passes_startup(struct bch_fs *c, enum bch_recovery_pass from)
 {
 	struct bch_fs_recovery *r = &c->recovery;

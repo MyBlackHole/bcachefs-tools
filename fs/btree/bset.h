@@ -147,6 +147,84 @@
  * first key in that range of bytes again.
  */
 
+// 备注：============================================================================
+// 备注：BSET (B树节点键值集合) 核心数据结构
+// 备注：============================================================================
+// 备注：
+// 备注：【整体架构】
+// 备注：
+// 备注：B树节点由多个 bset 组成，每个 bset 是一个有序键值数组：
+// 备注：
+// 备注：btree_node (struct btree)
+// 备注：+-- bset[0] (只读, 已排序, 辅助搜索树 - RO_AUX_TREE)
+// 备注：+-- bset[1] (只读, 已排序, 辅助搜索树 - RO_AUX_TREE)
+// 备注：+-- bset[2] (读写, 未写入, 简单查找表 - RW_AUX_TREE) <- 新键插入到这里
+// 备注：
+// 备注：【BKEY 键值格式】
+// 备注：
+// 备注：struct bkey_packed (压缩格式，变长)
+// 备注：+-- 头部: type, u64s, key_offset (压缩存储)
+// 备注：+-- 值: 变长数据(依赖具体键类型)
+// 备注：
+// 备注：struct bkey_i (解压格式，内存操作)
+// 备注：+-- struct bkey k (键: inode, offset, snapshot, size)
+// 备注：+-- 值数据
+// 备注：
+// 备注：【辅助搜索树 (Auxiliary Search Trees)】
+// 备注：
+// 备注：问题: 键值是变长的，无法直接用二分查找(无法定位下一个键)
+// 备注：解决方案: 构建辅助搜索树加速查找
+// 备注：
+// 备注：1. RO_AUX_TREE (只读集合):
+// 备注：- 使用二叉搜索树(Eytzinger布局，数组存储)
+// 备注：- 节点紧凑(4字节)，利用缓存预取
+// 备注：- 键值压缩存储(浮点格式: 指数7位 + 尾数22位 + 偏移3位)
+// 备注：
+// 备注：2. RW_AUX_TREE (读写集合):
+// 备注：- 简单数组索引，每256字节一个条目
+// 备注：- 插入时惰性更新
+// 备注：
+// 备注：【键值查找流程】
+// 备注：
+// 备注：bch2_btree_node_iter_peek()
+// 备注：+-- 遍历所有 bset (最多4个)
+// 备注：|   +-- RO_AUX_TREE: 二叉搜索树查找
+// 备注：|   |   +-- 每步比较使用压缩键值
+// 备注：|   |   +-- 定位到256字节范围内后线性搜索
+// 备注：|   +-- RW_AUX_TREE: 数组索引 + 线性搜索
+// 备注：+-- 合并各bset结果(考虑删除标记、whiteout等)
+// 备注：+-- 返回最小键值
+// 备注：
+// 备注：【键值插入流程】
+// 备注：
+// 备注：bch2_btree_bset_insert_key()
+// 备注：+-- 仅在最后一个bset(bset[nsets-1])插入
+// 备注：+-- 处理覆盖: 标记旧键为 deleted
+// 备注：+-- 插入新键到bset末尾
+// 备注：+-- 更新RW_AUX_TREE索引
+// 备注：+-- 如bset过大，触发节点分裂
+// 备注：
+// 备注：【节点分裂触发】
+// 备注：
+// 备注：当 live_u64s > BTREE_SPLIT_THRESHOLD (约 50% 节点容量):
+// 备注：+-- 分配2个新节点
+// 备注：+-- 按 3:2 比例分配键值(第一个节点60%)
+// 备注：+-- 重新计算键值格式
+// 备注：+-- 构建新的辅助搜索树
+// 备注：+-- 在父节点插入指向新节点的指针
+// 备注：+-- 标记旧节点为待删除
+// 备注：
+// 备注：【压缩与解压】
+// 备注：
+// 备注：键值在磁盘使用压缩格式(bkey_packed):
+// 备注：- 字段相对前一键值差分编码
+// 备注：- 值数据使用特定类型的压缩格式
+// 备注：
+// 备注：内存中使用解压格式(bkey_i):
+// 备注：- 方便快速访问和修改
+// 备注：- 统一的操作接口
+// 备注：
+// 备注：============================================================================
 enum bset_aux_tree_type {
 	BSET_NO_AUX_TREE,
 	BSET_RO_AUX_TREE,
@@ -352,12 +430,14 @@ btree_node_iter_set_find(struct btree_node_iter *iter, unsigned end_offset)
 	return NULL;
 }
 
+// 备注：迭代是否结束
 static inline bool __btree_node_iter_set_end(struct btree_node_iter *iter,
 					     unsigned i)
 {
 	return iter->data[i].k == iter->data[i].end;
 }
 
+// 备注：迭代是否结束
 static inline bool bch2_btree_node_iter_end(struct btree_node_iter *iter)
 {
 	return __btree_node_iter_set_end(iter, 0);
@@ -403,6 +483,7 @@ __bch2_btree_node_iter_peek_all(struct btree_node_iter *iter,
 	return __btree_node_offset_to_key(b, iter->data->k);
 }
 
+// 备注：迭代单个节点数据
 static inline struct bkey_packed *
 bch2_btree_node_iter_peek_all(struct btree_node_iter *iter, struct btree *b)
 {
@@ -411,6 +492,7 @@ bch2_btree_node_iter_peek_all(struct btree_node_iter *iter, struct btree *b)
 		: NULL;
 }
 
+// 备注：迭代下一个数据
 static inline struct bkey_packed *
 bch2_btree_node_iter_peek(struct btree_node_iter *iter, struct btree *b)
 {

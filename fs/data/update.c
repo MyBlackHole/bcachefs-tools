@@ -487,6 +487,7 @@ static int data_update_index_update_key(struct btree_trans *trans,
 	return 0;
 }
 
+// 备注：更新数据、索引, 内部实现
 static int __bch2_data_update_index_update(struct btree_trans *trans,
 					   struct bch_write_op *op)
 {
@@ -494,6 +495,7 @@ static int __bch2_data_update_index_update(struct btree_trans *trans,
 	struct data_update *u = container_of(op, struct data_update, op);
 	int ret = 0;
 
+	// 备注：迭代初始化
 	CLASS(btree_iter, iter)(trans, u->btree_id,
 				bkey_start_pos(&bch2_keylist_front(&op->insert_keys)->k),
 				BTREE_ITER_slots|BTREE_ITER_intent);
@@ -525,6 +527,7 @@ static int __bch2_data_update_index_update(struct btree_trans *trans,
 	return ret;
 }
 
+// 备注：更新数据、索引
 int bch2_data_update_index_update(struct bch_write_op *op)
 {
 	CLASS(btree_trans, trans)(op->c);
@@ -1315,6 +1318,34 @@ static void checksummed_and_non_checksummed_handling(struct data_update *u, stru
 	}
 }
 
+// 备注：bch2_data_update_init - 初始化数据更新操作（用于 rebalance/move/copygc）
+// 备注：@trans:	btree 事务
+// 备注：@iter:		指向要更新 extent 的 btree 迭代器（可为 NULL）
+// 备注：@ctxt:		移动上下文（用于 copygc/rebalance）
+// 备注：@m:			data_update 结构体
+// 备注：@wp:			write point 指定符
+// 备注：@io_opts:		inode I/O 选项
+// 备注：@data_opts:		数据更新选项（copygc/move/rebalance）
+// 备注：@btree_id:		目标 btree ID
+// 备注：@k:			要更新的 extent 键
+// 备注：
+// 备注：【核心职责】
+// 备注：
+// 备注：这是数据移动操作的核心初始化函数，支持多种数据更新场景：
+// 备注：- CopyGC: 垃圾回收时将有效数据迁移到新位置
+// 备注：- Rebalance: 在不同设备间重新平衡数据分布
+// 备注：- Move: 响应式地将数据从一个设备移动到另一个
+// 备注：- Promote/Demote: 调整数据在缓存/持久层的位置
+// 备注：
+// 备注：【初始化流程】
+// 备注：
+// 备注：1. 记录数据位置 (m->pos)
+// 备注：2. 复制并解包 extent 键值 (bch2_bkey_buf_reassemble)
+// 备注：3. 初始化 write_op (bch2_write_op_init)
+// 备注：4. 检查快照有效性 (bch2_check_key_has_snapshot)
+// 备注：5. 预分配磁盘空间 (bch2_disk_reservation_add)
+// 备注：6. 解析 extent 指针，统计需要保留的副本
+// 备注：7. 初始化 bio 用于读取旧数据
 int bch2_data_update_init(struct btree_trans *trans,
 			  struct btree_iter *iter,
 			  struct moving_context *ctxt,
@@ -1328,7 +1359,10 @@ int bch2_data_update_init(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	int ret = 0;
 
+	// 备注：记录数据位置（btree_id + pos），用于后续索引更新
 	m->pos = BBPOS(iter ? iter->btree_id : BTREE_ID_extents, k.k->p);
+
+	// 备注：初始化键值缓冲区并复制 extent 键值（解包处理）
 	bch2_bkey_buf_init(&m->k);
 	bch2_bkey_buf_reassemble(&m->k, k);
 	k = bkey_i_to_s_c(m->k.k);

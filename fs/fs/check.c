@@ -1908,12 +1908,14 @@ struct fsck_thread {
 	struct bch_opts		opts;
 };
 
+// 备注：退出检查恢复
 static void bch2_fsck_thread_exit(struct thread_with_stdio *_thr)
 {
 	struct fsck_thread *thr = container_of(_thr, struct fsck_thread, thr);
 	kfree(thr);
 }
 
+// 备注：离线检查线程函数
 static int bch2_fsck_offline_thread_fn(struct thread_with_stdio *stdio)
 {
 	struct fsck_thread *thr = container_of(stdio, struct fsck_thread, thr);
@@ -1923,6 +1925,8 @@ static int bch2_fsck_offline_thread_fn(struct thread_with_stdio *stdio)
 
 	c->recovery_task = current;
 
+	// 备注：启动文件系统
+	// 备注：内部会执行 recovery_passes */
 	int ret = bch2_fs_start(c);
 
 	CLASS(printbuf, buf)();
@@ -1949,6 +1953,7 @@ static int parse_mount_opts_user(char __user *optstr_user, struct bch_opts *opts
 	return bch2_parse_mount_opts(NULL, opts, NULL, optstr, false);
 }
 
+// 备注：离线检查
 long bch2_ioctl_fsck_offline(struct bch_ioctl_fsck_offline __user *user_arg)
 {
 	struct bch_ioctl_fsck_offline arg;
@@ -1993,6 +1998,7 @@ long bch2_ioctl_fsck_offline(struct bch_ioctl_fsck_offline __user *user_arg)
 	/* We need request_key() to be called before we punt to kthread: */
 	opt_set(thr->opts, nostart, true);
 
+	// 备注：初始化离线检查线程
 	bch2_thread_with_stdio_init(&thr->thr, &bch2_offline_fsck_ops);
 
 	thr->c = bch2_fs_open(&devs, &thr->opts);
@@ -2001,6 +2007,7 @@ long bch2_ioctl_fsck_offline(struct bch_ioctl_fsck_offline __user *user_arg)
 	    thr->c->opts.errors == BCH_ON_ERROR_panic)
 		thr->c->opts.errors = BCH_ON_ERROR_ro;
 
+	// 备注：启动离线检查线程
 	int ret = __bch2_run_thread_with_stdio(&thr->thr);
 	if (ret < 0) {
 		if (thr)
@@ -2010,6 +2017,7 @@ long bch2_ioctl_fsck_offline(struct bch_ioctl_fsck_offline __user *user_arg)
 	return ret;
 }
 
+// 备注：在线恢复函数
 static int bch2_fsck_online_thread_fn(struct thread_with_stdio *stdio)
 {
 	struct fsck_thread *thr = container_of(stdio, struct fsck_thread, thr);
@@ -2048,6 +2056,7 @@ static int bch2_fsck_online_thread_fn(struct thread_with_stdio *stdio)
 		c->opts.fsck = true;
 		set_bit(BCH_FS_in_fsck, &c->flags);
 
+		// 备注：进入恢复逻辑
 		ret = bch2_run_recovery_passes(c, passes, true) ?:
 			bch2_fs_fsck_errcode(c, &buf);
 
@@ -2076,6 +2085,7 @@ static const struct thread_with_stdio_ops bch2_online_fsck_ops = {
 	.fn		= bch2_fsck_online_thread_fn,
 };
 
+// 备注：ioctl 在线文件系统检查函数
 long bch2_ioctl_fsck_online(struct bch_fs *c, struct bch_ioctl_fsck_online arg)
 {
 	if (arg.flags)
@@ -2100,6 +2110,7 @@ long bch2_ioctl_fsck_online(struct bch_fs *c, struct bch_ioctl_fsck_online arg)
 	thr->c = c;
 	thr->opts = opts;
 
+	// 备注：注册内核线程运行在线文件系统检查函数
 	int ret = bch2_run_thread_with_stdio(&thr->thr, &bch2_online_fsck_ops);
 	if (ret < 0) {
 		bch_err_fn(c, ret);

@@ -1,4 +1,29 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+// 备注：B-tree 迭代器接口定义
+// 备注：
+// 备注：本文件定义了 B-tree 迭代器的核心操作接口，包括：
+// 备注：
+// 备注：1. 路径管理 (btree_path)
+// 备注：   - __btree_path_get: 增加路径引用计数
+// 备注：   - __btree_path_put: 减少路径引用计数，释放不再使用的路径
+// 备注：   - 路径引用计数机制允许多个迭代器共享同一路径
+// 备注：
+// 备注：2. 迭代器状态管理
+// 备注：   - btree_node_lock_seq_matches: 检查节点锁序列是否匹配（检测并发修改）
+// 备注：
+// 备注：3. 节点关系查询
+// 备注：   - btree_path_node: 获取路径中指定层级的节点
+// 备注：   - btree_node_parent: 获取节点的父节点
+// 备注：
+// 备注：迭代器工作流程：
+// 备注：1. trans_get -> 分配/复用 btree_path
+// 备注：2. btree_iter_traverse -> 从根遍历到目标位置
+// 备注：3. btree_iter_next / btree_iter_next_slot -> 迭代访问键
+// 备注：4. trans_put -> 释放路径引用
+// 备注：
+// 备注：路径复用与锁：
+// 备注：- 路径按锁顺序排序，避免死锁
+// 备注：- 持有锁时标记 should_be_locked，事务重启时自动重获取
 #ifndef _BCACHEFS_BTREE_ITER_H
 #define _BCACHEFS_BTREE_ITER_H
 
@@ -9,21 +34,65 @@
 #include "closure.h"
 #include "sb/counters.h"
 
+// 备注：bch2_trans_updates_to_text - 打印事务中的所有待处理更新
+// 备注：@out: 输出缓冲区
+// 备注：@trans: 事务上下文
+// 备注：
+// 备注：用于调试：显示 trans->updates 数组中的所有更新条目
 void bch2_trans_updates_to_text(struct printbuf *, struct btree_trans *);
+
+// 备注：bch2_btree_path_to_text_short - 打印路径的简要信息
+// 备注：@out: 输出缓冲区
+// 备注：@trans: 事务上下文
+// 备注：@idx: 路径索引
+// 备注：@path: B-tree 路径
+// 备注：
+// 备注：输出格式：btree_id pos [level]
 void bch2_btree_path_to_text_short(struct printbuf *, struct btree_trans *,
 				   btree_path_idx_t, struct btree_path *);
+
+// 备注：bch2_btree_path_to_text - 打印路径的详细信息
+// 备注：@out: 输出缓冲区
+// 备注：@trans: 事务上下文
+// 备注：@idx: 路径索引
+// 备注：@path: B-tree 路径
+// 备注：
+// 备注：输出包括：路径索引、位置、btree_id、每层节点信息、锁状态
 void bch2_btree_path_to_text(struct printbuf *, struct btree_trans *,
 			     btree_path_idx_t, struct btree_path *);
+
+// 备注：bch2_trans_paths_to_text - 打印事务中所有路径的简要信息
+// 备注：@out: 输出缓冲区
+// 备注：@trans: 事务上下文
 void bch2_trans_paths_to_text(struct printbuf *, struct btree_trans *);
+
+// 备注：bch2_dump_trans_paths_updates - 调试转储路径和更新信息
+// 备注：@trans: 事务上下文
+// 备注：
+// 备注：当路径引用计数溢出时调用，打印详细的调试信息
 void bch2_dump_trans_paths_updates(struct btree_trans *);
 
+// 备注：__bkey_err - 从 bkey 指针获取错误码
+// 备注：@k: bkey 指针（可能是错误指针）
+// 备注：
+// 备注：返回值：如果是错误指针返回负错误码，否则返回 0
+// 备注：这是内核 PTR_ERR 宏的封装，用于错误传播
 static inline int __bkey_err(const struct bkey *k)
 {
 	return PTR_ERR_OR_ZERO(k);
 }
 
+// 备注：bkey_err - 获取 bkey 值的错误码
+// 备注：@_k: bkey 值类型
+// 备注：
+// 备注：用于 try 宏的错误检查
 #define bkey_err(_k)	__bkey_err((_k).k)
 
+// 备注：bkey_try - 安全获取 bkey 值，传播错误
+// 备注：@_do: 要执行的表达式
+// 备注：
+// 备注：如果表达式返回错误，try 宏会将错误传播给调用者
+// 备注：否则返回 bkey 值
 #define bkey_try(_do)					\
 ({							\
 	typeof(_do) _k = _do;				\
@@ -31,6 +100,20 @@ static inline int __bkey_err(const struct bkey *k)
 	_k;						\
 })
 
+// 备注：__btree_path_get - 增加路径引用计数
+// 备注：@trans: 事务上下文
+// 备注：@path: B-tree 路径
+// 备注：@intent: 是否增加 intent 引用计数
+// 备注：
+// 备注：路径引用机制：
+// 备注：- 多个迭代器可以共享同一路径（通过 ref 计数）
+// 备注：- intent_ref 用于跟踪 intent 锁的持有数量
+// 备注：- 路径分配时记录 IP 地址用于调试
+// 备注：
+// 备注：边界检查：
+// 备注：- 索引必须在有效范围内
+// 备注：- 路径必须已分配
+// 备注：- ref 不能溢出 U8_MAX
 static inline void __btree_path_get(struct btree_trans *trans, struct btree_path *path, bool intent)
 {
 	unsigned idx = path - trans->paths;
@@ -55,6 +138,23 @@ static inline void __btree_path_get(struct btree_trans *trans, struct btree_path
 #endif
 }
 
+// 备注：__btree_path_put - 减少路径引用计数
+// 备注：@trans: 事务上下文
+// 备注：@path: B-tree 路径
+// 备注：@intent: 是否减少 intent 引用计数
+// 备注：
+// 备注：返回：true 如果引用计数降为 0，路径可以回收
+// 备注：
+// 备注：释放过程：
+// 备注：1. 减少 intent_ref（如果有 intent 锁）
+// 备注：2. 减少 ref
+// 备注：3. 如果 ref 为 0，清除分配位，归还路径到空闲池
+// 备注：
+// 备注：断言检查：
+// 备注：- 路径必须在有效范围内
+// 备注：- 路径必须已分配
+// 备注：- ref 必须大于 0
+// 备注：- 如果 intent 为 true，intent_ref 必须大于 0
 static inline bool __btree_path_put(struct btree_trans *trans, struct btree_path *path, bool intent)
 {
 	EBUG_ON(path - trans->paths >= trans->nr_paths);
@@ -74,18 +174,42 @@ static inline bool __btree_path_put(struct btree_trans *trans, struct btree_path
 	return --path->ref == 0;
 }
 
+// 备注：btree_path_node - 获取路径中指定层级的节点
+// 备注：@path: B-tree 路径
+// 备注：@level: 层级索引
+// 备注：
+// 备注：返回：指定层级的 B-tree 节点，如果超出范围则返回 NULL
+// 备注：注意：level 从 0 开始（叶子节点），深度递增
 static inline struct btree *btree_path_node(struct btree_path *path,
 					    unsigned level)
 {
 	return level < BTREE_MAX_DEPTH ? path->l[level].b : NULL;
 }
 
+// 备注：btree_node_lock_seq_matches - 检查锁序列是否匹配
+// 备注：@path: B-tree 路径
+// 备注：@b: B-tree 节点
+// 备注：@level: 节点层级
+// 备注：
+// 备注：检查路径中记录的锁序列号与节点当前锁序列号是否一致
+// 备注：用于检测节点是否在其他事务中被修改
+// 备注：
+// 备注：工作原理：
+// 备注：- 每次获取写锁时，锁序列号递增
+// 备注：- 如果节点被修改，序列号会变化
+// 备注：- 序列号不匹配意味着需要重新获取锁和遍历
 static inline bool btree_node_lock_seq_matches(const struct btree_path *path,
 					const struct btree *b, unsigned level)
 {
 	return path->l[level].lock_seq == six_lock_seq(&b->c.lock);
 }
 
+// 备注：btree_node_parent - 获取节点的父节点
+// 备注：@path: B-tree 路径
+// 备注：@b: B-tree 节点
+// 备注：
+// 备注：根据节点的 level 字段计算父节点在路径中的层级
+// 备注：父节点的层级 = 子节点层级 + 1
 static inline struct btree *btree_node_parent(struct btree_path *path,
 					      struct btree *b)
 {
@@ -273,6 +397,7 @@ struct bkey_s_c bch2_btree_path_peek_slot(struct btree_path *, struct bkey *);
  * bch2_btree_path_peek_slot() for a cached iterator might return a key in a
  * different snapshot:
  */
+// 备注：缓存迭代器的 bch2_btree_path_peek_slot() 可能会返回不同快照中的键:
 static inline struct bkey_s_c bch2_btree_path_peek_slot_exact(struct btree_path *path, struct bkey *u)
 {
 	struct bkey_s_c k = bch2_btree_path_peek_slot(path, u);
@@ -561,6 +686,7 @@ static inline void __bch2_btree_iter_set_pos(struct btree_iter *iter, struct bpo
 	iter->k.size = 0;
 }
 
+// 备注：设置迭代的 pos
 static inline void bch2_btree_iter_set_pos(struct btree_iter *iter, struct bpos new_pos)
 {
 	struct btree_trans *trans = iter->trans;
@@ -642,9 +768,11 @@ static inline void bch2_trans_iter_init_common(struct btree_trans *trans,
 	iter->trans		= trans;
 	iter->update_path	= 0;
 	iter->key_cache_path	= 0;
+	// 备注：设置迭代器的 btree_id, 类型
 	iter->btree_id		= btree;
 	iter->min_depth		= 0;
 	iter->flags		= flags;
+	// 备注：设置迭代器的 pos
 	iter->snapshot		= pos.snapshot;
 	iter->pos		= pos;
 	iter->k			= POS_KEY(pos);
@@ -674,6 +802,7 @@ static inline void __bch2_trans_iter_init(struct btree_trans *trans,
 		bch2_trans_iter_init_outlined(trans, iter, btree, pos, flags, _THIS_IP_);
 }
 
+// 备注：初始化迭代器
 static inline void bch2_trans_iter_init(struct btree_trans *trans,
 			  struct btree_iter *iter,
 			  enum btree_id btree, struct bpos pos,
@@ -878,6 +1007,8 @@ static inline int __bch2_bkey_get_val_typed(struct btree_trans *trans,
 
 u32 bch2_trans_begin(struct btree_trans *);
 
+// 备注：bch2_trans_node_iter_class_init
+// 备注：bch2_trans_iter_exit
 #define for_each_btree_node(_trans, _iter, _btree_id, _start,			\
 			    _depth, _flags, _b, _do)				\
 ({										\
@@ -928,6 +1059,7 @@ static inline struct bkey_s_c bch2_btree_iter_peek_type(struct btree_iter *iter,
 						bch2_btree_iter_peek(iter);
 }
 
+// 备注：迭代下一个键
 static inline struct bkey_s_c bch2_btree_iter_peek_max_type(struct btree_iter *iter,
 							    struct bpos end,
 							    enum btree_iter_update_trigger_flags flags)
@@ -957,6 +1089,29 @@ static inline int btree_trans_too_many_iters(struct btree_trans *trans)
  * continue inside _do to refer to an outer loop must open-code their own
  * restart loop instead of using lockrestart_do (see for_each_btree_key_*).
  */
+// 备注：lockrestart_do - 事务核心宏：带自动重启的事务执行
+// 备注：
+// 备注：这是bcachefs事务系统的核心机制，实现乐观并发控制：
+// 备注：- 首次执行或重启后调用 bch2_trans_begin() 初始化事务状态
+// 备注：- 执行 _do 表达式(通常是B树操作)
+// 备注：- 如果返回 RESTART 错误码，跳转到 transaction_restart 标签重试
+// 备注：- 成功返回后验证事务未被意外重启
+// 备注：
+// 备注：为什么使用 goto 而不是循环:
+// 备注：- 为了在 for_each_btree_key2() 等宏中 break/continue 能正确工作
+// 备注：- 避免多层循环嵌套导致的控制流复杂
+// 备注：
+// 备注：典型使用模式:
+// 备注：lockrestart_do(trans, {
+// 备注：ret = some_btree_operation(trans);
+// 备注：if (ret) return ret;
+// 备注：ret = bch2_trans_commit(trans, ...);
+// 备注：});
+// 备注：
+// 备注：事务重启的常见原因:
+// 备注：- 锁获取失败(如 bch2_btree_node_lock_write 返回 RESTART)
+// 备注：- btree节点被其他线程修改或分裂
+// 备注：- 路径遍历失败需要重新traverse
 #define lockrestart_do(_trans, _do)					\
 ({									\
 	int _ret2;							\
@@ -1031,6 +1186,7 @@ static inline int btree_trans_too_many_iters(struct btree_trans *trans)
 	for_each_btree_key_max_continue(_trans, _iter, _end, _flags, _k, _do);	\
 })
 
+// 备注：遍历 btree 的每一个键
 #define for_each_btree_key(_trans, _iter, _btree_id, _start, _flags, _k, _do)	\
 	for_each_btree_key_max(_trans, _iter, _btree_id, _start, SPOS_MAX, _flags, _k, _do)
 
@@ -1206,7 +1362,115 @@ static inline void class_btree_trans_destructor(struct btree_trans **p)
 
 #define class_btree_trans_constructor(_c)	bch2_trans_get(_c)
 
+// 备注：============================================================================
+// 备注：事务读写操作数据流示例
+// 备注：============================================================================
+// 备注：
+// 备注：【读操作流程】
+// 备注：--------------------------------
+// 备注：  // 1. 获取事务(使用 CLASS 宏自动管理生命周期)
+// 备注：  CLASS(btree_trans, trans)(c);
+// 备注：
+// 备注：  // 2. 初始化迭代器，定位到目标位置
+// 备注：  struct btree_iter iter;
+// 备注：  bch2_trans_iter_init(trans, &iter, BTREE_ID_extents,
+// 备注：                       POS(inode, offset), BTREE_ITER_intent);
+// 备注：
+// 备注：  // 3. 读取键值(自动遍历 btree 节点)
+// 备注：  struct bkey_s_c k = bch2_btree_iter_peek(&iter);
+// 备注：  if (k.k) {
+// 备注：      // 使用键值数据...
+// 备注：  }
+// 备注：
+// 备注：  // 4. 清理(CLASS宏自动调用 bch2_trans_put)
+// 备注：  bch2_trans_iter_exit(&iter);
+// 备注：
+// 备注：
+// 备注：【写操作流程】
+// 备注：--------------------------------
+// 备注：  // 使用 lockrestart_do 宏包装，自动处理事务重启
+// 备注：  lockrestart_do(trans, {
+// 备注：      struct btree_iter iter;
+// 备注：      struct bkey_i *new_k;
+// 备注：      int ret = 0;
+// 备注：
+// 备注：      // 1. 初始化迭代器(带 intent 标志，表示可能修改)
+// 备注：      bch2_trans_iter_init(trans, &iter, BTREE_ID_extents,
+// 备注：                           POS(inode, offset),
+// 备注：                           BTREE_ITER_intent|BTREE_ITER_is_extents);
+// 备注：
+// 备注：      // 2. 读取现有键值(用于判断覆盖或插入)
+// 备注：      struct bkey_s_c old = bch2_btree_iter_peek(&iter);
+// 备注：
+// 备注：      // 3. 在事务内存中分配新键值空间
+// 备注：      new_k = bch2_trans_kmalloc(trans, sizeof(*new_k) + val_size);
+// 备注：      if (IS_ERR(new_k)) {
+// 备注：          ret = PTR_ERR(new_k);
+// 备注：          goto err;
+// 备注：      }
+// 备注：
+// 备注：      // 4. 填充新键值数据
+// 备注：      bkey_init(&new_k->k);
+// 备注：      new_k->k.p = iter.pos;
+// 备注：      new_k->k.type = KEY_TYPE_extent;
+// 备注：      // ... 填充值数据 ...
+// 备注：
+// 备注：      // 5. 将更新添加到事务队列(此时还未写入 btree)
+// 备注：      ret = bch2_trans_update(trans, &iter, new_k, 0);
+// 备注：      if (ret)
+// 备注：          goto err;
+// 备注：
+// 备注：      // 6. 提交事务(原子性应用所有更新)
+// 备注：      ret = bch2_trans_commit(trans, disk_res, &journal_seq, 0);
+// 备注：      // 如返回 RESTART 错误，lockrestart_do 自动重试
+// 备注：
+// 备注：  err:
+// 备注：      bch2_trans_iter_exit(&iter);
+// 备注：      ret;
+// 备注：  });
+// 备注：
+// 备注：
+// 备注：【事务重启场景】
+// 备注：--------------------------------
+// 备注：以下情况会触发事务重启(返回 -BCH_ERR_transaction_restart):
+// 备注：
+// 备注：1. 锁冲突: 尝试锁定 btree 节点时失败
+// 备注：   -> 其他线程持有冲突锁
+// 备注：   -> 节点正在被写入磁盘
+// 备注：
+// 备注：2. 节点变化: 遍历过程中 btree 节点被修改
+// 备注：   -> 节点分裂(需要重新遍历路径)
+// 备注：   -> 节点被回收或驱逐
+// 备注：
+// 备注：3. 资源不足: 无法立即获取所需资源
+// 备注：   -> 内存分配失败(GFP_NOWAIT 模式下)
+// 备注：   -> 日志空间不足
+// 备注：
+// 备注：4. 版本冲突: 乐观锁验证失败
+// 备注：   -> 读取的旧键值在提交前已被其他事务修改
+// 备注：
+// 备注：重启流程:
+// 备注：  lockrestart_do 捕获 RESTART 错误
+// 备注：      -> 调用 bch2_trans_begin() 重置事务状态
+// 备注：      -> 释放所有锁和临时资源
+// 备注：      -> 跳转到 transaction_restart 标签重试
+// 备注：      -> 重新执行整个操作(包括重新遍历 btree)
+// 备注：
+// 备注：
+// 备注：【批量扫描操作】
+// 备注：--------------------------------
+// 备注：  // 使用 for_each_btree_key 宏自动处理事务重启
+// 备注：  for_each_btree_key(trans, iter, BTREE_ID_extents,
+// 备注：                     POS_MIN, BTREE_ITER_prefetch, k, {
+// 备注：      // 处理每个键值 k
+// 备注：      // 如需要修改，添加更新到事务
+// 备注：      // 定期调用 bch2_trans_commit() 提交批次
+// 备注：  });
+// 备注：
+// 备注：============================================================================
+
 /* deprecated, prefer CLASS(btree_trans) */
+// 备注：事务包
 #define bch2_trans_run(_c, _do)						\
 ({									\
 	CLASS(btree_trans, trans)(_c);					\

@@ -6,13 +6,34 @@ use crate::c;
 #[cfg(feature = "std")]
 use crate::c::bpos as Bpos;
 
+// ============================================
+// 备注：Printbuf — bcachefs 格式化输出缓冲区
+//
+// 备注：Printbuf 是 bcachefs 的核心格式化输出工具。
+// 备注：它与 Rust 的 fmt::Write trait 集成，支持：
+// 备注：  - 制表位（tabstop）对齐输出
+// 备注：  - 缩进管理（indent_add / indent_sub）
+// 备注：  - 变处理 \t、\r、\n 的格式控制
+//
+// 备注：使用场景：bch2_*_to_text() 系列函数的所有格式化输出。
+// 备注：模式：每个 to_text 函数接收 &mut printbuf，向其中追加文本。
+//
+// 备注：PrintbufIndent: RAII 缩进守卫。
+// 备注：  通过 Printbuf::indent() 创建，drop 时自动取消缩进。
+// ============================================
+
 /// Rust wrapper around `c::printbuf` providing `fmt::Write` via
 /// `bch2_prt_bytes_indented`, which processes `\t`, `\r`, `\n` for
 /// tabstop and indent handling.
+// 备注：Printbuf — bcachefs 的格式化输出缓冲区包装。
+// 备注：C 端所有的 bch2_*_to_text() 函数都使用 printbuf 输出。
+// 备注：Rust 端通过 fmt::Write trait 集成，兼容 write!() 宏。
 pub struct Printbuf(c::printbuf);
 
 /// RAII guard for printbuf indentation — calls `indent_sub` on drop.
 /// Use through `Printbuf::indent()`.
+// 备注：PrintbufIndent — RAII 缩进守卫。
+// 备注：indent() 创建，作用域结束时自动恢复缩进级别。
 pub struct PrintbufIndent<'a> {
     buf: &'a mut Printbuf,
     spaces: u32,

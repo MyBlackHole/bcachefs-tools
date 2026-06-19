@@ -68,6 +68,9 @@ struct bch_accounting {
 enum bch_data_type {
 #define x(t, n) BCH_DATA_##t,
 	BCH_DATA_TYPES()
+	// 备注：BCH_DATA_free: 空闲块数
+	// 备注：BCH_DATA_need_discard: 需要丢弃的块数
+	// 备注：*/
 #undef x
 	BCH_DATA_NR
 };

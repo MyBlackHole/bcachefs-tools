@@ -619,6 +619,7 @@ static noinline int bch2_read_retry_nodecode(struct btree_trans *trans,
 			break;
 		}
 
+		// 备注：实际文件内容读取
 		ret = __bch2_read_extent(trans, rbio, bvec_iter,
 					 bkey_start_pos(&u->k.k->k),
 					 u->btree_id,
@@ -1328,6 +1329,9 @@ static noinline int read_extent_inline(struct bch_fs *c,
 		bch2_read_bio_to_text_atomic(&buf, rbio);
 	}));
 
+	// 备注：内联数据
+
+	// 备注：内联数据大小
 	unsigned bytes = min(iter.bi_size, offset_into_extent << 9);
 	swap(iter.bi_size, bytes);
 	zero_fill_bio_iter(&rbio->bio, iter);
@@ -1338,6 +1342,7 @@ static noinline int read_extent_inline(struct bch_fs *c,
 	bytes = min(iter.bi_size, bkey_inline_data_bytes(k.k));
 
 	swap(iter.bi_size, bytes);
+	// 备注：移动数据到 orig bio
 	memcpy_to_bio(&rbio->bio, iter, bkey_inline_data_p(k));
 	swap(iter.bi_size, bytes);
 
@@ -1417,6 +1422,7 @@ static noinline int read_extent_no_encryption_key(struct btree_trans *trans,
 	return read_extent_done(rbio, flags, bch_err_throw(c, data_read_no_encryption_key));
 }
 
+// 备注：实际文件内容读取
 int __bch2_read_extent(struct btree_trans *trans,
 		       struct bch_read_bio *orig,
 		       struct bvec_iter iter, struct bpos read_pos,
@@ -1447,6 +1453,7 @@ int __bch2_read_extent(struct btree_trans *trans,
 	ret = bch2_bkey_pick_read_device(c, k, failed, &pick, dev, flags);
 
 	/* hole or reservation - just zero fill: */
+	// 备注：洞或预留 - 只需零填充：
 	if (unlikely(!ret))
 		return read_extent_hole(c, orig, iter, k, flags);
 
@@ -1591,6 +1598,96 @@ out:
 	}
 }
 
+// 备注：============================================================================
+// 备注：bcachefs 读取核心实现 - bch2_read
+// 备注：============================================================================
+// 备注：
+// 备注：【函数定位】
+// 备注：
+// 备注：这是 bcachefs 读取路径的核心函数，负责从 extents B 树中查找数据位置
+// 备注：并发起实际的块设备读取。
+// 备注：
+// 备注：【调用路径】
+// 备注：
+// 备注：上层调用者:
+// 备注：1. FUSE: bcachefs_fuse_read() -> read_aligned() -> bch2_read()
+// 备注：2. VFS: bch2_read_iter() -> bch2_read()
+// 备注：3. 预读: bch2_readahead() -> bch2_read()
+// 备注：
+// 备注：【核心职责】
+// 备注：
+// 备注：1. 数据定位:
+// 备注：- 遍历 extents B 树查找 inode + offset 对应的 extent
+// 备注：- 处理快照 (subvolume/snapshot) 隔离
+// 备注：- 解析间接 extent (bch2_read_indirect_extent)
+// 备注：
+// 备注：2. 读取执行:
+// 备注：- 计算 extent 内的偏移量
+// 备注：- 调用 __bch2_read_extent() 执行实际读取
+// 备注：- 处理跨 extent 的连续读取
+// 备注：
+// 备注：3. 错误处理:
+// 备注：- 校验和错误重试
+// 备注：- 副本切换 (有多个副本时)
+// 备注：- 记录错误历史避免重复失败
+// 备注：
+// 备注：【数据流】
+// 备注：
+// 备注：用户请求 (inode, offset, size)
+// 备注：↓
+// 备注：查找 extents B 树 (iter at POS(inode, offset))
+// 备注：↓
+// 备注：获取 extent 键值 (包含设备指针、校验和等)
+// 备注：↓
+// 备注：解析间接 extent (如需要)
+// 备注：↓
+// 备注：计算 extent 内偏移
+// 备注：↓
+// 备注：调用 __bch2_read_extent()
+// 备注：↓
+// 备注：选择设备/副本
+// 备注：↓
+// 备注：提交 bio 到块层
+// 备注：↓
+// 备注：IO 完成回调 (bch2_read_endio)
+// 备注：↓
+// 备注：校验和验证
+// 备注：↓
+// 备注：解压缩 (如需要)
+// 备注：↓
+// 备注：复制数据到用户缓冲区
+// 备注：
+// 备注：【关键逻辑】
+// 备注：
+// 备注：1. 事务重启处理:
+// 备注：- 循环中使用 bch2_trans_begin() 支持事务重启
+// 备注：- 快照 ID 在每次迭代中重新获取
+// 备注：
+// 备注：2. 跨 extent 读取:
+// 备注：- while 循环处理多个 extent
+// 备注：- bio_advance_iter() 推进到下一个片段
+// 备注：- BCH_READ_last_fragment 标记最后一个片段
+// 备注：
+// 备注：3. 错误重试:
+// 备注：- failed 结构记录错误历史
+// 备注：- prev_read 记录上一次读取的键值
+// 备注：- data_read_err_should_retry() 判断是否重试
+// 备注：
+// 备注：【与写入的区别】
+// 备注：
+// 备注：1. 读取不需要事务提交 (只读操作)
+// 备注：2. 读取不需要磁盘空间预留
+// 备注：3. 读取涉及设备选择策略 (多个副本)
+// 备注：4. 读取需要处理压缩数据解压
+// 备注：5. 读取有复杂的错误恢复机制
+// 备注：
+// 备注：【关键成员】
+// 备注：
+// 备注：- rbio: 读取 bio (包含用户缓冲区和回调)
+// 备注：- bvec_iter: bio 向量迭代器 (跟踪读取进度)
+// 备注：- inum: inode 编号 + 子卷
+// 备注：- failed: 错误历史记录
+// 备注：- flags: 读取标志 (如 BCH_READ_retry, BCH_READ_last_fragment)
 int bch2_read(struct btree_trans *trans, struct bch_read_bio *rbio,
 		struct bvec_iter bvec_iter, subvol_inum inum,
 		struct bch_io_failures *failed,
@@ -1602,48 +1699,88 @@ int bch2_read(struct btree_trans *trans, struct bch_read_bio *rbio,
 	enum btree_id data_btree;
 	int ret;
 
+	// 备注：调试检查: 确保不是在数据更新路径中调用
 	EBUG_ON(rbio->data_update);
 
+	// 备注：初始化临时键值缓冲区 sk
+	// 备注：用于存储重组后的键值（处理间接extent时需要用可修改的缓冲区）
+	// 备注：__cleanup属性确保函数退出时自动释放
 	struct bkey_buf sk __cleanup(bch2_bkey_buf_exit);
 	bch2_bkey_buf_init(&sk);
 
+	// 备注：初始化B树迭代器，用于遍历extents B树
+	// 备注：BTREE_ID_extents: 数据extent树
+	// 备注：POS(inum.inum, bvec_iter.bi_sector): 起始位置（inode + 扇区偏移）
+	// 备注：BTREE_ITER_slots: 迭代模式，用于查找覆盖指定位置的slot
 	CLASS(btree_iter, iter)(trans, BTREE_ID_extents,
 				POS(inum.inum, bvec_iter.bi_sector),
 				BTREE_ITER_slots);
 
+	// 备注：主循环：跨多个extent读取数据
+	// 备注：当读取范围跨越多个extent时需要循环处理
 	while (1) {
+		// 备注：默认使用extents树，可能被间接extent改变
 		data_btree = BTREE_ID_extents;
 
+		// 备注：事务重启点
+		// 备注：乐观并发控制：如遇到锁冲突或节点变化，从事务重启
+		// 备注：清理所有待处理更新，重置路径，重新遍历
 		bch2_trans_begin(trans);
 
+		// 备注：获取子卷对应的快照ID
+		// 备注：快照隔离：确保读取正确快照版本的数据
+		// 备注：如子卷不存在或已被删除，返回错误
 		u32 snapshot;
 		ret = bch2_subvolume_get_snapshot(trans, inum.subvol, &snapshot);
 		if (ret)
 			goto err;
 
+		// 备注：设置迭代器快照，确保读取一致性视图
 		bch2_btree_iter_set_snapshot(&iter, snapshot);
 
+		// 备注：设置迭代器位置到当前读取位置
+		// 备注：注意：每次循环可能推进位置（跨extent读取）
 		bch2_btree_iter_set_pos(&iter,
 				POS(inum.inum, bvec_iter.bi_sector));
 
+		// 备注：在extents树中查找覆盖当前位置的slot
+		// 备注：返回：包含目标位置的extent键值
+		// 备注：如未找到extent，k.k将为NULL
 		k = bch2_btree_iter_peek_slot(&iter);
 		ret = bkey_err(k);
 		if (ret)
 			goto err;
 
+		// 备注：计算在extent内的偏移量
+		// 备注：iter.pos.offset: 当前读取位置（以扇区为单位）
+		// 备注：bkey_start_offset(k.k): extent起始位置
+		// 备注：offset_into_extent: 需从extent内读取的起始偏移
 		s64 offset_into_extent = iter.pos.offset -
 			bkey_start_offset(k.k);
+		// 备注：计算可从当前extent读取的扇区数
+		// 备注：k.k->size: extent总大小（扇区数）
+		// 备注：减去偏移量得到剩余可读数据量
 		unsigned sectors = k.k->size - offset_into_extent;
 
+		// 备注：将只读键值k复制到可修改缓冲区sk
+		// 备注：需要修改键值（如解析间接extent时）必须使用可修改副本
 		bch2_bkey_buf_reassemble(&sk, k);
 
+		// 备注：解析间接extent（引用其他extent的元数据extent）
+		// 备注：如extent是间接的，需查找实际数据extent
+		// 备注：会修改data_btree指向正确的B树ID
+		// 备注：更新offset_into_extent为实际extent内的偏移
 		ret = bch2_read_indirect_extent(trans, &data_btree,
 					&offset_into_extent, &sk);
 		if (ret)
 			goto err;
 
+		// 备注：使用解析后的键值（可能是实际数据extent）
 		k = bkey_i_to_s_c(sk.k);
 
+		// 备注：重试路径的键值一致性检查
+		// 备注：如键值在上次重试后发生变化（如被其他写入修改），
+		// 备注：重置失败历史，因为之前的错误可能不再适用
 		if (unlikely(flags & BCH_READ_in_retry) &&
 		    !bkey_and_val_eq(k, bkey_i_to_s_c(prev_read->k))) {
 			failed->nr = 0;
@@ -1654,37 +1791,79 @@ int bch2_read(struct btree_trans *trans, struct bch_read_bio *rbio,
 		 * With indirect extents, the amount of data to read is the min
 		 * of the original extent and the indirect extent:
 		 */
+		// 备注：计算实际可读取的扇区数
+		// 备注：考虑因素：
+		// 备注：1. extent剩余大小（sectors）
+		// 备注：2. 间接extent的大小限制（k.k->size - offset_into_extent）
+		// 备注：取较小值确保不越界读取
 		sectors = min_t(unsigned, sectors, k.k->size - offset_into_extent);
 
+		// 备注：计算本次读取的字节数
+		// 备注：min(可用扇区数, bio剩余扇区数) * 512
+		// 备注：确保不超出bio请求的读取范围
 		unsigned bytes = min(sectors, bvec_iter_sectors(bvec_iter)) << 9;
+		// 备注：临时交换bi_size用于调用__bch2_read_extent
+		// 备注：该函数使用bi_size确定读取长度
 		swap(bvec_iter.bi_size, bytes);
 
+		// 备注：检查是否为最后一个片段
+		// 备注：如bio剩余大小等于本次读取大小，说明是最后一段
+		// 备注：设置BCH_READ_last_fragment标志通知下层处理
 		if (bvec_iter.bi_size == bytes)
 			flags |= BCH_READ_last_fragment;
 		else
 			flags |= BCH_READ_must_clone;
 
+		// 备注：调用底层extent读取函数
+		// 备注：实际执行设备选择、bio提交等操作
+		// 备注：参数说明：
+		// 备注：- trans: 事务上下文
+		// 备注：- rbio: 读取bio
+		// 备注：- bvec_iter: 当前bio向量迭代器
+		// 备注：- iter.pos: 当前位置
+		// 备注：- data_btree: 数据所在的B树
+		// 备注：- k: extent键值
+		// 备注：- offset_into_extent: extent内偏移
+		// 备注：- failed: 失败历史记录
+		// 备注：- flags: 读取标志
+		// 备注：- -1: 设备选择（-1表示自动选择）
 		ret = __bch2_read_extent(trans, rbio, bvec_iter, iter.pos,
 					 data_btree, k,
 					 offset_into_extent, failed, flags, -1);
+		// 备注：恢复原始bi_size
 		swap(bvec_iter.bi_size, bytes);
 
+		// 备注：如读取失败，跳转到错误处理
 		if (ret)
 			goto err;
 
+		// 备注：检查是否完成所有读取
+		// 备注：如是最后一个片段，退出循环
 		if (flags & BCH_READ_last_fragment)
 			break;
 
+		// 备注：推进bio迭代器到下一个位置
+		// 备注：继续循环处理下一个extent
 		bio_advance_iter(&rbio->bio, &bvec_iter, bytes);
 err:
+		// 备注：错误处理与重试逻辑
+		// 备注：特殊错误：校验和错误可能是由于用户空间修改导致
+		// 备注：设置BCH_READ_must_bounce标志，使用反弹缓冲区重试
 		if (ret == -BCH_ERR_data_read_retry_csum_err_maybe_userspace)
 			flags |= BCH_READ_must_bounce;
 
+		// 备注：判断是否应重试
+		// 备注：如错误不可重试（如ENOENT），退出循环
+		// 备注：如可重试，循环继续，事务会重新初始化
 		if (ret && !data_read_err_should_retry(ret))
 			break;
 	}
 
+	// 备注：最终错误处理
+	// 备注：如读取过程中发生错误且未被处理
 	if (unlikely(ret)) {
+		// 备注：记录错误日志（除非在重试中或extent被标记为poisoned）
+		// 备注：避免重复记录相同错误
 		if (!(flags & BCH_READ_in_retry) &&
 		    ret != -BCH_ERR_extent_poisoned) {
 			CLASS(printbuf, buf)();
@@ -1693,8 +1872,11 @@ err:
 			bch_err_ratelimited(c, "%s", buf.buf);
 		}
 
+		// 备注：保存错误码到rbio供上层查询
 		rbio->ret = ret;
 
+		// 备注：完成bio（如不在重试中）
+		// 备注：调用完成回调，释放资源
 		if (!(flags & BCH_READ_in_retry))
 			bch2_rbio_done(rbio);
 	}

@@ -132,6 +132,7 @@ struct bkey_format {
 };
 
 /* Btree keys - all units are in sectors */
+// 备注：Btree 键 - 所有单元都在扇区中
 
 struct bpos {
 	/*
@@ -142,8 +143,15 @@ struct bpos {
 	 * structure, it has to be byte swabbed when reading in metadata that
 	 * wasn't written in native endian order:
 	 */
+	// 备注：字序与机器字节序匹配 - btree 代码将 bpos 视为单个大整数，
+	// 备注：用于搜索/比较目的
+	// 备注：
+	// 备注：请注意，无论 bpos 嵌入另一个磁盘数据结构中的何处，
+	// 备注：在读取未按本机字节序写入的元数据时都必须对其进行字节交换：
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	// 备注：我们要查找的快照 ID:
 	__u32		snapshot;
+	// 备注：逻辑偏移位置
 	__u64		offset;
 	__u64		inode;
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -159,9 +167,13 @@ __aligned(4)
 #endif
 ;
 
+// 备注：索引节点的最大大小
 #define KEY_INODE_MAX			((__u64)~0ULL)
+// 备注：偏移量最大值
 #define KEY_OFFSET_MAX			((__u64)~0ULL)
+// 备注：快照 ID 最大值
 #define KEY_SNAPSHOT_MAX		((__u32)~0U)
+// 备注：key 最大值
 #define KEY_SIZE_MAX			((__u32)~0U)
 
 #define SPOS(_inode, _offset, _snapshot)		\
@@ -195,11 +207,14 @@ __aligned(4)
 #endif
 ;
 
+// 备注：value (bch_val) 是紧跟在 key 后面的
 struct bkey {
 	/* Size of combined key and value, in u64s */
+	// 备注：组合键和值的大小, 单位 64 位
 	__u8		u64s;
 
 	/* Format of key (0 for format local to btree node) */
+	// 备注：键的格式（0 for Bormat local to btree 节点）
 #if defined(__LITTLE_ENDIAN_BITFIELD)
 	__u8		format:7,
 			needs_whiteout:1;
@@ -211,12 +226,15 @@ struct bkey {
 #endif
 
 	/* Type of the value */
+	// 备注：值的类型
 	__u8		type;
+	// 备注：以上部分与 bkey_packed 重合
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	__u8		pad[1];
 
 	struct bversion	bversion;
+	// 备注：范围大小，以扇区为单位(512 Bytes)
 	__u32		size;		/* extent size, in sectors */
 	struct bpos	p;
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -257,10 +275,13 @@ __aligned(8)
 #endif
 ;
 
+// 备注：一组 bkey 会被打包成一个 bkey_packed 结构，
+// 备注：随后添加一个 bset 的头. 就成了 bset
 struct bkey_packed {
 	__u64		_data[0];
 
 	/* Size of combined key and value, in u64s */
+	// 备注：组合键和值的大小，以 u64 为单位
 	__u8		u64s;
 
 	/* Format of key (0 for format local to btree node) */
@@ -279,7 +300,11 @@ struct bkey_packed {
 #endif
 
 	/* Type of the value */
+	// 备注：值的类型
 	__u8		type;
+	// 备注：以上部份与 bkey 重合
+
+	// 备注：bkey 剩余部分按 format 格式打包
 	__u8		key_start[0];
 
 	/*
@@ -296,6 +321,7 @@ typedef struct {
 	__le64			hi;
 } bch_le128;
 
+// 备注：键大小(单位64位)
 #define BKEY_U64s			(sizeof(struct bkey) / sizeof(__u64))
 #define BKEY_U64s_MAX			U8_MAX
 #define BKEY_VAL_U64s_MAX		(BKEY_U64s_MAX - BKEY_U64s)
@@ -333,6 +359,7 @@ enum bch_bkey_fields {
 })
 
 /* bkey with inline value */
+// 备注：带有内联 value 的 bkey
 struct bkey_i {
 	__u64			_data[0];
 
@@ -475,9 +502,15 @@ enum bch_bkey_type_flags {
 	x(logged_op_stripe_update, 37,	BKEY_TYPE_strict_btree_checks,	\
 	  "Logged stripe creation/update operation for crash recovery")
 
+// 备注：键类型
 enum bch_bkey_type {
 #define x(name, nr, ...) KEY_TYPE_##name	= nr,
 	BCH_BKEY_TYPES()
+	// 备注：KEY_TYPE_inode_v3|KEY_TYPE_inode_v2|KEY_TYPE_inode: 索引节点
+	// 备注：KEY_TYPE_dirent: 目录项
+	// 备注：KEY_TYPE_inline_data: 内联数据
+	// 备注：KEY_TYPE_indirect_inline_data: 间接内联数据
+	// 备注：KEY_TYPE_deleted: 删除
 #undef x
 	KEY_TYPE_MAX,
 };
@@ -526,6 +559,7 @@ struct bch_set {
 };
 
 /* 128 bits, sufficient for cryptographic MACs: */
+// 备注：128 位，足以用于加密
 struct bch_csum {
 	__le64			lo;
 	__le64			hi;
@@ -760,9 +794,13 @@ enum btree_id_flags {
 	  BIT_ULL(KEY_TYPE_backpointer),					\
 	  "Stripe backpointers")					\
 
+// 备注：树节点 id 类型
 enum btree_id {
 #define x(name, nr, ...) BTREE_ID_##name = nr,
 	BCH_BTREE_IDS()
+	// 备注：BTREE_ID_freespace: 空闲桶
+	// 备注：BTREE_ID_subvolumes: 子卷
+	// 备注：BTREE_ID_alloc: 分配
 #undef x
 	BTREE_ID_NR
 };
@@ -872,10 +910,14 @@ LE64_BITMASK(BCH_KDF_SCRYPT_P,	struct bch_sb_field_crypt, kdf_flags, 32, 48);
  * On clean shutdown, store btree roots and current journal sequence number in
  * the superblock:
  */
+
+// 备注：在干净关闭时，
+// 备注：将 btree 根和当前日志序列号存储在超级块中：
 struct jset_entry {
 	__le16			u64s;
 	__u8			btree_id;
 	__u8			level;
+	// 备注：指定该 jset 持有的内容
 	__u8			type; /* designates what this jset holds */
 	__u8			pad[3];
 
@@ -1116,14 +1158,25 @@ struct bch_sb_layout {
  */
 struct bch_sb {
 	struct bch_csum		csum;
+	// 备注：磁盘格式版本
 	__le16			version;
+	// 备注：该文件系统包含的最旧的元数据版本； 所以我们可以
+	// 备注：安全地删除兼容性代码并拒绝挂载文件系统
+	// 备注：我们需要它
 	__le16			version_min;
 	__le16			pad[2];
+	// 备注：标识为 bcachefs 超级块 (BCHFS_MAGIC)
 	__uuid_t		magic;
+	// 备注：用于生成各种幻数并识别
+	// 备注：永不改变
 	__uuid_t		uuid;
+	// 备注：用户可见的UUID，可以更改
 	__uuid_t		user_uuid;
+	// 备注：文件系统标签
 	__u8			label[BCH_SB_LABEL_SIZE];
+	// 备注：写入此 sb 的扇区
 	__le64			offset;
+	// 备注：标识最近的超级块，每次写入超级块递增
 	__le64			seq;
 
 	__le16			block_size;
@@ -1137,7 +1190,9 @@ struct bch_sb {
 
 	__le64			flags[7];
 	__le64			write_time;
+	// 备注：启用不兼容的功能标记
 	__le64			features[2];
+	// 备注：兼任的功能启用标志
 	__le64			compat[2];
 
 	struct bch_sb_layout	layout;
@@ -1325,6 +1380,7 @@ static inline void SET_BCH_SB_BACKGROUND_COMPRESSION_TYPE(struct bch_sb *sb, __u
 enum bch_sb_feature {
 #define x(f, n) BCH_FEATURE_##f,
 	BCH_SB_FEATURES()
+	// 备注：BCH_FEATURE_inline_data: 内联数据
 #undef x
 	BCH_FEATURE_NR,
 };
@@ -1350,9 +1406,13 @@ enum bch_sb_compat {
 	x(incompatible,		1)	\
 	x(none,			2)
 
+// 备注：更新方式选项
 enum bch_version_upgrade_opts {
 #define x(t, n) BCH_VERSION_UPGRADE_##t = n,
 	BCH_VERSION_UPGRADE_OPTS()
+	/* BCH_VERSION_UPGRADE_none: none */
+	// 备注：BCH_VERSION_UPGRADE_compatible: 兼容模式
+	// 备注：BCH_VERSION_UPGRADE_incompatible: 不兼容模式(启用新特性)
 #undef x
 };
 
@@ -1430,6 +1490,7 @@ enum bch_str_hash_opts {
 	x(crc64,			6)	\
 	x(xxhash,			7)
 
+// 备注：校验和类型
 enum bch_csum_type {
 #define x(t, n) BCH_CSUM_##t = n,
 	BCH_CSUM_TYPES()
@@ -1448,6 +1509,7 @@ static const __maybe_unused unsigned bch_crc_bytes[] = {
 	[BCH_CSUM_chacha20_poly1305_128]	= 16,
 };
 
+// 备注：是否是加密校验和类型
 static inline _Bool bch2_csum_type_is_encryption(enum bch_csum_type type)
 {
 	switch (type) {
@@ -1528,6 +1590,7 @@ enum bch_scrub_journal_opts {
 
 #define BCACHEFS_STATFS_MAGIC		BCACHEFS_SUPER_MAGIC
 
+// 备注：魔法数
 #define JSET_MAGIC		__cpu_to_le64(0x245235c1a3625032ULL)
 #define BSET_MAGIC		__cpu_to_le64(0x90135c78b99e07f5ULL)
 
@@ -1731,10 +1794,13 @@ struct jset_entry_rewind {
  *
  * version is for on disk format changes.
  */
+// 备注：日记条目的磁盘格式
 struct jset {
 	struct bch_csum		csum;
 
 	__le64			magic;
+	// 备注：单调递增；
+	// 备注：每个日记条目都有自己唯一的序列号
 	__le64			seq;
 	__le32			version;
 	__le32			flags;
@@ -1747,6 +1813,8 @@ struct jset {
 	__le16			_write_clock;
 
 	/* Sequence number of oldest dirty journal entry */
+	// 备注：最旧的脏日志条目的序列号
+	// 备注：最旧的日志条目，它仍然具有 btree 尚未刷新到磁盘的键
 	__le64			last_seq;
 
 
@@ -1756,6 +1824,7 @@ struct jset {
 
 LE32_BITMASK(JSET_CSUM_TYPE,	struct jset, flags, 0, 4);
 LE32_BITMASK(JSET_BIG_ENDIAN,	struct jset, flags, 4, 5);
+// 备注：不刷新
 LE32_BITMASK(JSET_NO_FLUSH,	struct jset, flags, 5, 6);
 LE32_BITMASK(JSET_HAS_OVERWRITES, struct jset, flags, 6, 7);
 
@@ -1820,7 +1889,7 @@ static inline bool btree_id_recovers_from_scan(enum btree_id btree)
 {
 	return btree == BTREE_ID_alloc || !btree_id_can_reconstruct(btree);
 }
-
+// 备注：B 树最大深度
 enum { BTREE_MAX_DEPTH = 4 };
 
 /* Btree nodes */
@@ -1831,6 +1900,8 @@ enum { BTREE_MAX_DEPTH = 4 };
  * On disk a btree node is a list/log of these; within each set the keys are
  * sorted
  */
+// 备注：在磁盘上，btree 节点是这些的列表/日志;
+// 备注：在每个集合中，键都是排序的
 struct bset {
 	__le64			seq;
 
@@ -1845,6 +1916,8 @@ struct bset {
 
 	__le32			flags;
 	__le16			version;
+	// 备注：描述了本 bset 中，全部 payload 长度，
+	// 备注：以 u64 为单位计
 	__le16			u64s; /* count of d[] in u64s */
 
 	struct bkey_packed	start[0];
@@ -1853,30 +1926,54 @@ struct bset {
 
 LE32_BITMASK(BSET_CSUM_TYPE,	struct bset, flags, 0, 4);
 
+// 备注：设置 cpu 字节序
 LE32_BITMASK(BSET_BIG_ENDIAN,	struct bset, flags, 4, 5);
 LE32_BITMASK(BSET_SEPARATE_WHITEOUTS,
 				struct bset, flags, 5, 6);
 
 /* Sector offset within the btree node: */
+// 备注：btree 节点内的扇区偏移量:
 LE32_BITMASK(BSET_OFFSET,	struct bset, flags, 16, 32);
 
+// 备注：对于每个节点，
+// 备注：会固定分配 256 字节的连续空间 (bch_opts::bch_sb_btree_node_size). 分两部分:
+// 备注：已写入部分 (written)
+// 备注：对于写入磁盘的部分，它是由一个 btree_node 打头，
+// 备注：尾随若干个 btree_node_entry
+// 备注：剩余未使用的部分 */
 struct btree_node {
 	struct bch_csum		csum;
 	__le64			magic;
 
 	/* this flags field is encrypted, unlike bset->flags: */
+	// 备注：这个 flags 字段是加密的，与 bset->flags 不同：
 	__le64			flags;
 
 	/* Closed interval: */
+	// 备注：闭区间:
+	// 备注：[min_key, max_key], 代表本节点所覆盖的范围
 	struct bpos		min_key;
 	struct bpos		max_key;
+	// 备注：不再使用此字段
 	struct bch_extent_ptr	_ptr; /* not used anymore */
 	struct bkey_format	format;
 
 	union {
+	// 备注：bset 是一组 bkey 的集合
+	// 备注：本 btree 节点上同一趟写入到磁盘的 bkey 集合
+	// 备注：后续写入磁盘的 bkey 在新 bset 集合
+	// 备注：同一 bkey 被覆写，意味着在后续的 bset 有同名 bkey， value 不同
+	// 备注：同名: 即指 bpos 相同
+	// 备注：这就是所谓的 log 结构，不断写后合并 (有 lsm 那味道)
+	// 备注：
+	// 备注：同一个 bkey 被删除，
+	// 备注：意味着在后续的 bset 有“同名” bkey，它是一个 whiteout
 	struct bset		keys;
 	struct {
+		// 备注：以下 _data 前字段是跟 bset _data 前一样的
 		__u8		pad[22];
+		// 备注：是指包含 key 和 value 在内的尺寸，
+		// 备注：以 u64 (8 Bytes) 为单位计
 		__le16		u64s;
 		__u64		_data[0];
 

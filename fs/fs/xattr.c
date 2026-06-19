@@ -163,6 +163,42 @@ static int bch2_xattr_get_trans(struct btree_trans *trans, struct bch_inode_info
 	return ret;
 }
 
+// 备注：bch2_xattr_set - 设置或删除扩展属性
+// 备注：@trans:	btree 事务
+// 备注：@inum:		inode 编号和子卷
+// 备注：@inode_u:	inode 结构（未打包）
+// 备注：@name:		属性名
+// 备注：@value:		属性值（NULL 表示删除）
+// 备注：@size:		属性值大小
+// 备注：@type:		属性类型（用户/可信/安全等）
+// 备注：@flags:		操作标志（XATTR_CREATE/REPLACE）
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：设置或删除文件的扩展属性（xattr）。扩展属性用于存储文件的额外元数据，
+// 备注：如 ACL、SELinux 标签、用户自定义属性等。
+// 备注：
+// 备注：【xattr 类型】
+// 备注：
+// 备注：- XATTR_USER: 用户命名空间（user.）
+// 备注：- XATTR_TRUSTED: 可信命名空间（trusted.），仅特权用户可访问
+// 备注：- XATTR_SECURITY: 安全命名空间（security.），SELinux/SMACK 使用
+// 备注：- XATTR_SYSTEM: 系统命名空间（system.），如 POSIX ACL
+// 备注：
+// 备注：【参数标志】
+// 备注：
+// 备注：- XATTR_CREATE: 仅当属性不存在时创建，存在则返回 -EEXIST
+// 备注：- XATTR_REPLACE: 仅当属性存在时替换，不存在则返回 -ENODATA
+// 备注：- 无标志: 创建或替换（原子操作）
+// 备注：
+// 备注：【执行流程】
+// 备注：
+// 备注：1. 检查子卷是否为只读
+// 备注：2. 读取并锁定 inode
+// 备注：3. 更新 inode 的 ctime
+// 备注：4. 如设置属性：创建新的 xattr btree 键值
+// 备注：5. 如删除属性：从 btree 删除 xattr 键值
+// 备注：6. 提交事务
 int bch2_xattr_set(struct btree_trans *trans, subvol_inum inum,
 		   struct bch_inode_unpacked *inode_u,
 		   const char *name, const void *value, size_t size,
@@ -171,6 +207,7 @@ int bch2_xattr_set(struct btree_trans *trans, subvol_inum inum,
 	struct bch_fs *c = trans->c;
 
 	u32 snapshot;
+	// 备注：检查子卷是否为只读
 	try(bch2_subvol_is_ro_trans(trans, inum.subvol, &snapshot));
 
 	CLASS(btree_iter_uninit, inode_iter)(trans);
@@ -181,27 +218,35 @@ int bch2_xattr_set(struct btree_trans *trans, subvol_inum inum,
 	 * that an inode update also happens - to ensure that if a key exists in
 	 * one of those btrees with a given snapshot ID an inode is also present
 	 */
+	// 备注：除了更新 ctime 外，extent、dirent 和 xattr 的更新
+	// 备注：都要求 inode 也更新 - 以确保如果在这些 btree 之一中存在
+	// 备注：具有给定快照 ID 的键，则 inode 也存在
 	inode_u->bi_ctime = bch2_current_time(c);
 
 	try(bch2_inode_write(trans, &inode_iter, inode_u));
 
+	// 备注：初始化哈希信息，用于在 xattr btree 中查找
 	struct bch_hash_info hash_info;
 	try(bch2_hash_info_init(c, inode_u, &hash_info));
 
 	int ret;
 	if (value) {
+		// 备注：设置/替换 xattr
 		struct bkey_i_xattr *xattr;
 		unsigned namelen = strlen(name);
 		unsigned u64s = BKEY_U64s +
 			xattr_val_u64s(namelen, size);
 
+		// 备注：检查 xattr 大小是否超过限制
 		if (u64s > U8_MAX)
 			return -ERANGE;
 
+		// 备注：在事务内存中分配 xattr 键值空间
 		xattr = bch2_trans_kmalloc(trans, u64s * sizeof(u64));
 		if (IS_ERR(xattr))
 			return PTR_ERR(xattr);
 
+		// 备注：初始化 xattr 键值
 		bkey_xattr_init(&xattr->k_i);
 		xattr->k.u64s		= u64s;
 		xattr->v.x_type		= type;
@@ -210,11 +255,13 @@ int bch2_xattr_set(struct btree_trans *trans, subvol_inum inum,
 		memcpy(xattr->v.x_name_and_value, name, namelen);
 		memcpy(xattr_val(&xattr->v), value, size);
 
+		// 备注：将 xattr 插入 btree（使用哈希索引）
 		ret = bch2_hash_set(trans, bch2_xattr_hash_desc, &hash_info,
 			      inum, &xattr->k_i,
 			      (flags & XATTR_CREATE ? STR_HASH_must_create : 0)|
 			      (flags & XATTR_REPLACE ? STR_HASH_must_replace : 0));
 	} else {
+		// 备注：删除 xattr
 		struct xattr_search_key search =
 			X_SEARCH(type, name, strlen(name));
 

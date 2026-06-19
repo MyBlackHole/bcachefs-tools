@@ -1253,6 +1253,7 @@ int bch2_dev_usage_remove(struct bch_fs *c, struct bch_dev *ca)
 	})) ?: bch2_btree_write_buffer_flush_sync(trans);
 }
 
+// 备注：初始化设备的磁盘使用情况 
 int bch2_dev_usage_init(struct bch_dev *ca, bool gc)
 {
 	struct bch_fs *c = ca->fs;

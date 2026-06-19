@@ -279,10 +279,58 @@ static int bch2_quota_check_limit(struct bch_fs *c,
 	return 0;
 }
 
+// 备注：bch2_quota_acct - 配额统计更新
+// 备注：@c:		文件系统实例
+// 备注：@qid:		配额ID（用户/组/项目）
+// 备注：@counter:	计数器类型（空间/索引节点）
+// 备注：@v:			变化值（正数增加，负数减少）
+// 备注：@mode:		统计模式
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是bcachefs配额系统的核心统计函数，用于更新用户、组或项目的资源使用量。
+// 备注：在每次文件创建、删除、写入或截断时调用，确保配额限制得到强制执行。
+// 备注：
+// 备注：【配额类型】
+// 备注：
+// 备注：- 用户配额（USRQUOTA）: 按UID统计
+// 备注：- 组配额（GRPQUOTA）: 按GID统计
+// 备注：- 项目配额（PRJQUOTA）: 按项目ID统计
+// 备注：
+// 备注：【计数器类型】
+// 备注：
+// 备注：- Q_SPC: 磁盘空间使用量（以512字节扇区为单位）
+// 备注：- Q_INO: 索引节点（文件/目录）数量
+// 备注：
+// 备注：【限制检查】
+// 备注：
+// 备注：1. Hard Limit（硬限制）:
+// 备注：- 绝对不能超过的上限
+// 备注：- 超出时返回-EDQUOT错误，操作失败
+// 备注：
+// 备注：2. Soft Limit（软限制）:
+// 备注：- 可以暂时超过，但会触发警告
+// 备注：- 超过后在宽限期内必须降到软限制以下
+// 备注：- 宽限期过后视为硬限制
+// 备注：
+// 备注：【执行流程】
+// 备注：
+// 备注：1. 获取所有启用的配额类型的内存配额结构
+// 备注：2. 加锁保护配额数据的一致性
+// 备注：3. 检查是否超出硬限制或软限制
+// 备注：4. 如未超出限制，更新计数器值
+// 备注：5. 解锁并刷新警告消息
+// 备注：
+// 备注：【并发控制】
+// 备注：
+// 备注：- 每配额类型有独立的mutex锁
+// 备注：- 使用mutex_lock_nested避免死锁检测警告
+// 备注：- 所有配额类型同时加锁，顺序固定
 int bch2_quota_acct(struct bch_fs *c, struct bch_qid qid,
 		    enum quota_counters counter, s64 v,
 		    enum quota_acct_mode mode)
 {
+	// 备注：获取当前启用的配额类型 
 	unsigned qtypes = enabled_qtypes(c);
 	struct bch_memquota_type *q;
 	struct bch_memquota *mq[QTYP_NR];
@@ -290,29 +338,36 @@ int bch2_quota_acct(struct bch_fs *c, struct bch_qid qid,
 	unsigned i;
 	int ret = 0;
 
+	// 备注：初始化警告消息结构 
 	memset(&msgs, 0, sizeof(msgs));
 
+	// 备注：为每个启用的配额类型分配或查找内存配额结构 
 	for_each_set_qtype(c, i, q, qtypes) {
 		mq[i] = genradix_ptr_alloc(&q->table, qid.q[i], GFP_KERNEL);
 		if (!mq[i])
 			return -ENOMEM;
 	}
 
+	// 备注：加锁保护配额数据，嵌套锁避免死锁警告 
 	for_each_set_qtype(c, i, q, qtypes)
 		mutex_lock_nested(&q->lock, i);
 
+	// 备注：检查配额限制：硬限制和软限制 
 	for_each_set_qtype(c, i, q, qtypes) {
 		ret = bch2_quota_check_limit(c, i, mq[i], &msgs, counter, v, mode);
 		if (ret)
 			goto err;
 	}
 
+	// 备注：配额检查通过，更新计数器值 
 	for_each_set_qtype(c, i, q, qtypes)
 		mq[i]->c[counter].v += v;
 err:
+	// 备注：解锁所有配额类型的锁 
 	for_each_set_qtype(c, i, q, qtypes)
 		mutex_unlock(&q->lock);
 
+	// 备注：刷新配额警告消息到系统日志 
 	flush_warnings(qid, c->vfs_sb, &msgs);
 
 	return ret;

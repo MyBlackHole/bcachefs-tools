@@ -400,24 +400,149 @@ static inline void bch2_verify_insert_pos(struct btree *b,
 
 
 /* Auxiliary search trees */
+// 备注：============================================================================
+// 备注：辅助搜索树 (Auxiliary Search Trees) 实现
+// 备注：============================================================================
+// 备注：
+// 备注：【核心概念】
+// 备注：
+// 备注：B树节点的键值是变长的，无法直接用标准二分查找。辅助搜索树是构建在
+// 备注：bset 之上的索引结构，用于加速键值查找。
+// 备注：
+// 备注：【RO_AUX_TREE - 只读集合搜索树】
+// 备注：
+// 备注：结构: 二叉搜索树，使用 Eytzinger 数组布局
+// 备注：
+// 备注：[4]           <- 根节点 (索引4)
+// 备注：/   \
+// 备注：[2]     [6]       <- 第二层
+// 备注：/  \     /  \
+// 备注：[1]  [3] [5]  [7]    <- 第三层
+// 备注：
+// 备注：特点:
+// 备注：- 所有层级按数组顺序存储，便于CPU缓存预取
+// 备注：- 每个节点仅4字节(bkey_float结构)
+// 备注：- 索引粒度: 每256字节一个索引点(BSET_CACHELINE)
+// 备注：
+// 备注：【bkey_float - 压缩键值表示】
+// 备注：
+// 备注：struct bkey_float {
+// 备注：u8  exponent;     // 指数: 表示比较的位位置(0-127)
+// 备注：u8  key_offset;   // 在256字节块内的偏移
+// 备注：u16 mantissa;     // 尾数: 该位的值
+// 备注：};
+// 备注：
+// 备注：压缩原理:
+// 备注：- 键值比较时，只需比较高 bits 直到有差异
+// 备注：- exponent 记录最高差异位的位置
+// 备注：- mantissa 记录该位的值(0或1)
+// 备注：- 查找时按 exponent/mantissa 导航，无需解压完整键值
+// 备注：
+// 备注：示例:
+// 备注：搜索键: 0x12345678
+// 备注：节点键: 0x1234ABCD
+// 备注：
+// 备注：最高差异位: bit 15 (从0计数)
+// 备注：0x12345678 的 bit15 = 0
+// 备注：0x1234ABCD 的 bit15 = 1
+// 备注：
+// 备注：bkey_float = { exponent=15, mantissa=1 }
+// 备注：
+// 备注：查找时: 如搜索键的 bit15=0，走左分支；bit15=1，走右分支
+// 备注：
+// 备注：【RW_AUX_TREE - 读写集合索引】
+// 备注：
+// 备注：结构: 简单数组
+// 备注：struct rw_aux_tree {
+// 备注：u16 offset;      // 在bset中的字节偏移
+// 备注：struct bpos k;   // 该位置键值的解压形式
+// 备注：} entries[N];
+// 备注：
+// 备注：特点:
+// 备注：- 每256字节一个条目
+// 备注：- 插入时惰性更新(仅增加偏移量，溢出时才重新定位)
+// 备注：- 适合频繁插入的场景
+// 备注：
+// 备注：【查找流程】
+// 备注：
+// 备注：1. RO_AUX_TREE 查找:
+// 备注：while (节点存在) {
+// 备注：比较搜索键与当前节点的 exponent/mantissa
+// 备注：决定走向左/右子节点 (使用 Eytzinger 公式)
+// 备注：预取下一个节点到缓存
+// 备注：}
+// 备注：
+// 备注：2. 线性搜索:
+// 备注：从辅助树指向的256字节范围内线性搜索
+// 备注：逐个解压键值比较直到找到目标
+// 备注：
+// 备注：3. 跨bset合并:
+// 备注：对每个bset重复上述过程
+// 备注：合并各bset的结果(考虑deleted标记)
+// 备注：返回最小有效键值
+// 备注：
+// 备注：【复杂度分析】
+// 备注：
+// 备注：时间复杂度: O(log n) 辅助树查找 + O(1) 线性搜索
+// 备注：- 辅助树高度: log2(n/256)，通常3-5层
+// 备注：- 线性搜索范围: 最多32个键值(256字节/8字节)
+// 备注：
+// 备注：空间复杂度: ~3% 额外空间
+// 备注：- 每个256字节块需要一个4字节节点
+// 备注：- 开销: 4/256 = 1.56%
+// 备注：- 加上rw_aux_tree: 总计约3%
+// 备注：
+// 备注：【性能优化】
+// 备注：
+// 备注：1. 缓存预取:
+// 备注：- Eytzinger布局确保父子节点在相邻缓存行
+// 备注：- 硬件预取器能自动加载后续层级
+// 备注：
+// 备注：2. 分支预测友好:
+// 备注：- 树形结构减少分支误预测
+// 备注：- 相比线性扫描，预测成功率显著提高
+// 备注：
+// 备注：3. 延迟计算:
+// 备注：- 仅在需要时解压完整键值
+// 备注：- 大部分比较使用压缩表示
+// 备注：
+// 备注：============================================================================
 
 #define BFLOAT_FAILED_UNPACKED	U8_MAX
 #define BFLOAT_FAILED		U8_MAX
 
+// 备注：struct bkey_float - 压缩键值节点
+// 备注：
+// 备注：用于RO_AUX_TREE的4字节压缩键值表示。
+// 备注：通过仅记录最高差异位，大幅减少索引内存占用。
 struct bkey_float {
+	// 备注：最高差异位的位置 (0-127)
 	u8		exponent;
+	// 备注：在256字节块内的偏移
 	u8		key_offset;
+	// 备注：该差异位的值 (0或1)
 	u16		mantissa;
 };
 #define BKEY_MANTISSA_BITS	16
 
+// 备注：struct ro_aux_tree - 只读辅助搜索树
+// 备注：
+// 备注：使用Eytzinger数组布局的二叉搜索树。
+// 备注：节点紧密排列，便于缓存预取。
 struct ro_aux_tree {
+	// 备注：变长节点数组
 	u8			nothing[0];
 	struct bkey_float	f[];
 };
 
+// 备注：struct rw_aux_tree - 读写辅助索引
+// 备注：
+// 备注：简单数组索引，每个条目对应256字节范围。
+// 备注：插入时更新偏移量，适合频繁修改的bset。
 struct rw_aux_tree {
+	// 备注：在bset中的字节偏移
 	u16		offset;
+	// 备注：该位置键值的解压形式
 	struct bpos	k;
 };
 
@@ -921,6 +1046,8 @@ void bch2_bset_build_aux_tree(struct btree *b, struct bset_tree *t,
 	bset_aux_tree_verify(b);
 }
 
+// 备注：bset 初始化
+// 备注：先设置首个*/
 void bch2_bset_init_first(struct btree *b, struct bset *i)
 {
 	struct bset_tree *t;
@@ -929,8 +1056,10 @@ void bch2_bset_init_first(struct btree *b, struct bset *i)
 
 	memset(i, 0, sizeof(*i));
 	get_random_bytes(&i->seq, sizeof(i->seq));
+	// 备注：设置 cpu 字节序
 	SET_BSET_BIG_ENDIAN(i, CPU_BIG_ENDIAN);
 
+	// 备注：b.nsets 是零所以取的 b set 的第一个
 	t = &b->set[b->nsets++];
 	set_btree_bset(b, t, i);
 }
@@ -1262,6 +1391,7 @@ static inline bool bkey_mantissa_bits_dropped(const struct btree *b,
 #endif
 }
 
+// 备注：搜索树查找
 __flatten
 static struct bkey_packed *bset_search_tree(const struct btree *b,
 				const struct bset_tree *t,
@@ -1312,6 +1442,7 @@ static struct bkey_packed *bset_search_tree(const struct btree *b,
 	return cacheline_to_bkey(b, t, inorder, f->key_offset);
 }
 
+// 备注：在键集合中查找键
 static __always_inline __flatten
 struct bkey_packed *__bch2_bset_search(struct btree *b,
 				struct bset_tree *t,
@@ -1481,6 +1612,7 @@ void bch2_btree_node_iter_init(struct bch_fs *c, struct btree *b,
 	struct bkey_packed *k[MAX_BSETS];
 	unsigned i;
 
+	// 备注：不可能搜索 key 小于 min_key 或 大于 max_key
 	EBUG_ON(bpos_lt(*search, b->data->min_key));
 	EBUG_ON(bpos_gt(*search, b->data->max_key));
 	bset_aux_tree_verify(b);
@@ -1511,6 +1643,7 @@ void bch2_btree_node_iter_init(struct bch_fs *c, struct btree *b,
 		k[i] = bch2_bset_search_linear(b, t, search,
 					       packed_search, &p.k, k[i]);
 		if (k[i] != end)
+			// 备注：设置 btree 节点 set 迭代器
 			*pos++ = (struct btree_node_iter_set) {
 				__btree_node_key_to_offset(b, k[i]),
 				__btree_node_key_to_offset(b, end)

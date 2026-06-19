@@ -704,6 +704,62 @@
  * \texttt{bcachefs data scrub}. Nocow data cannot be scrubbed (no checksums).
  */
 
+// ============================================
+// 备注：用户数据写入 IO 管线实现
+// 包含：内联写入、COW 写入、Nocow 写入等完整写入路径
+// ============================================
+// 备注：用户数据写入管线总览图：
+// 备注：
+// 备注：  入口 bch2_write()
+// 备注：    │
+// 备注：    ├─ 小数据 (≤1KB) ─→ bch2_write_data_inline()
+// 备注：    │                   数据嵌入 extent 键值，不分配磁盘空间
+// 备注：    │
+// 备注：    └─ 正常数据 ─→ __bch2_write() 主循环
+// 备注：                     │
+// 备注：                     ├─ Nocow ─→ bch2_nocow_write()
+// 备注：                     │           就位覆盖写入，不经数据转换管线
+// 备注：                     │
+// 备注：                     └─ COW（主路径，循环直到数据全部提交）
+// 备注：                          │
+// 备注：                          ├── [分配] alloc_sectors_req + open_bucket_get
+// 备注：                          │
+// 备注：                          ├── [转换] bch2_write_extent()
+// 备注：                          │   ① 校验和计算
+// 备注：                          │   ② 压缩 (lz4/zstd/gzip)
+// 备注：                          │   ③ 加密 (ChaCha20)
+// 备注：                          │   ④ EC 编码分发
+// 备注：                          │
+// 备注：                          ├── [提交] bch2_submit_wbio_replicas()
+// 备注：                          │   向所有副本设备提交 bio
+// 备注：                          │
+// 备注：                          ├── [完成] bch2_write_endio()
+// 备注：                          │   单副本 IO 完成，收集错误
+// 备注：                          │
+// 备注：                          └── [索引] bch2_write_index()
+// 备注：                              → __bch2_write_index() 更新 extent B 树
+// 备注：                              → bch2_write_done() 写完成回调
+// 备注：
+// 备注：并发模型：数据写入在调用者上下文同步完成 (BCH_WRITE_sync)。
+// 备注：  IO 完成回调 bch2_write_endio 在块层完成上下文中执行。
+// 备注：  索引更新 bch2_write_index 在 write_index_wq workqueue 中执行。
+// 备注：
+// 备注：与 btree 节点写入的关键差异：
+// 备注：  · 用户数据 = COW 写入（新分配空间），btree 节点 = 就位更新
+// 备注：  · 用户数据经过压缩/加密管线，btree 节点只做校验和
+// 备注：  · 用户数据更新 extents B 树，btree 节点更新 btree 节点 key
+// 备注：图例：─→ 控制流，[xxx] 处理阶段
+// 备注：
+// 备注：本文件包含以下主要函数：
+// 备注：  bch2_write()               写入入口
+// 备注：  __bch2_write()             主循环：分配 → 写入 → 索引
+// 备注：  bch2_write_extent()        COW 数据转换管线
+// 备注：  bch2_write_prep_encoded_data()  已编码数据预处理
+// 备注：  bch2_nocow_write()         Nocow 就位覆盖写入
+// 备注：  __bch2_write_index()       索引更新
+// 备注：  bch2_write_endio()         IO 完成回调
+// 备注：  bch2_submit_wbio_replicas() 提交 bio 到所有副本
+
 #include "bcachefs.h"
 
 #include "alloc/buckets.h"
@@ -1158,32 +1214,172 @@ void bch2_write_op_error(struct bch_write_op *op, bool full, u64 offset, const c
  * wbios here.  Non-nocow callers pass NULL and we take fresh io_refs
  * via bch2_dev_get_ioref atomically.
  */
+// 备注：============================================================================
+// 备注：写入 bio 副本提交函数 - bch2_submit_wbio_replicas
+// 备注：============================================================================
+// 备注：
+// 备注：【函数定位】
+// 备注：
+// 备注：这是 bcachefs 写入路径中最底层的块层 IO 提交流数。
+// 备注：它负责将一个写 bio 提交到多个设备（副本），实现数据的冗余存储。
+// 备注：
+// 备注：【调用路径】
+// 备注：
+// 备注：上层调用链:
+// 备注：1. 数据写入: bch2_write() → __bch2_write() → bch2_write_extent()
+// 备注：→ bch2_submit_wbio_replicas()
+// 备注：
+// 备注：2. B树写入: bch2_btree_node_write() → __bch2_btree_node_write()
+// 备注：→ bch2_submit_wbio_replicas()
+// 备注：
+// 备注：【核心职责】
+// 备注：
+// 备注：1. 遍历 extent 中的所有设备指针
+// 备注：2. 为每个设备创建/克隆 bio
+// 备注：3. 获取设备引用 (防止设备被移除)
+// 备注：4. 设置 bio 的目标设备和扇区
+// 备注：5. 提交 bio 到块层
+// 备注：
+// 备注：【bio 克隆机制】
+// 备注：
+// 备注：对于多副本写入，需要为每个副本创建独立的 bio:
+// 备注：- 第一个副本: 使用原始 bio (wbio)
+// 备注：- 后续副本: 克隆新 bio (n)
+// 备注：
+// 备注：克隆过程:
+// 备注：```
+// 备注：n = bio_alloc_clone(NULL, &wbio->bio, GFP_NOFS, &c->replica_set);
+// 备注：n->bio.bi_end_io = wbio->bio.bi_end_io;  // 共享完成回调
+// 备注：n->bio.bi_private = wbio->bio.bi_private;
+// 备注：bio_inc_remaining(&wbio->bio);  // 增加父 bio 的引用计数
+// 备注：```
+// 备注：
+// 备注：【设备引用管理】
+// 备注：
+// 备注：1. 获取设备引用:
+// 备注：- nocow=true: bch2_dev_have_ref() (已持有引用)
+// 备注：- nocow=false: bch2_dev_get_ioref() (获取新引用)
+// 备注：
+// 备注：2. 引用类型:
+// 备注：- BCH_DATA_btree: BCH_DEV_READ_REF_btree_node_write
+// 备注：- 其他数据: BCH_DEV_WRITE_REF_io_write
+// 备注：
+// 备注：【bio 提交流程】
+// 备注：
+// 备注：1. 遍历 extent 中的所有 ptr:
+// 备注：```
+// 备注：bkey_for_each_ptr(ptrs, ptr) {
+// 备注：if (ptr->dev == BCH_SB_MEMBER_INVALID)
+// 备注：continue;  // 跳过无效设备
+// 备注：...
+// 备注：}
+// 备注：```
+// 备注：
+// 备注：2. 获取设备引用:
+// 备注：```
+// 备注：struct bch_dev *ca = nocow
+// 备注：? bch2_dev_have_ref(c, ptr->dev)
+// 备注：: bch2_dev_get_ioref(c, ptr->dev, ref_rw, ref_idx);
+// 备注：```
+// 备注：
+// 备注：3. 克隆 bio (多副本):
+// 备注：- 如果不是最后一个 ptr，克隆新 bio
+// 备注：- 共享完成回调和私有数据
+// 备注：- 增加父 bio 引用计数
+// 备注：
+// 备注：4. 设置 bio 参数:
+// 备注：- n->c = c (文件系统上下文)
+// 备注：- n->dev = ptr->dev (目标设备)
+// 备注：- n->have_ioref = (ca != NULL) (是否持有设备引用)
+// 备注：- n->submit_time = local_clock() (提交时间戳)
+// 备注：- n->bio.bi_iter.bi_sector = ptr->offset (目标扇区)
+// 备注：
+// 备注：5. 提交 bio:
+// 备注：```
+// 备注：bio_set_dev(&n->bio, ca->disk_sb.bdev);
+// 备注：submit_bio(&n->bio);  // 进入块层
+// 备注：```
+// 备注：
+// 备注：【错误处理】
+// 备注：
+// 备注：1. 设备引用获取失败 (have_ioref=false):
+// 备注：- 设置 bio 状态为 BLK_STS_REMOVED
+// 备注：- 调用 bio_endio() 直接完成
+// 备注：- 不提交到块层
+// 备注：
+// 备注：2. no_data_io 模式 (调试用):
+// 备注：- 不实际提交到块层
+// 备注：- 直接调用 bio_endio() 模拟成功
+// 备注：
+// 备注：【性能统计】
+// 备注：
+// 备注：每个成功提交的 bio 都会统计:
+// 备注：```
+// 备注：this_cpu_add(ca->io_done->sectors[WRITE][type], bio_sectors(&n->bio));
+// 备注：```
+// 备注：
+// 备注：【关键数据结构】
+// 备注：
+// 备注：- wbio: 原始写 bio，包含待写入数据
+// 备注：- k: extent 键值，包含所有设备指针
+// 备注：- ptrs: 设备指针数组
+// 备注：- n: 当前副本的 bio (可能是 wbio 或克隆)
+// 备注：- ca: 设备上下文，包含块设备指针
+// 备注：- nocow: 是否为 COW (写时复制) 写入
+// 备注：
+// 备注：【并发控制】
+// 备注：
+// 备注：- bio_inc_remaining(): 增加父 bio 引用计数
+// 备注：- 每个副本完成时调用 bio_endio() 减少引用
+// 备注：- 所有副本完成后，父 bio 的回调被触发
+// 备注：
+// 备注：@wbio: 写 bio，包含待写入数据
+// 备注：@c: 文件系统实例
+// 备注：@type: 数据类型 (user, btree, 等)
+// 备注：@k: extent 键值，包含设备指针
+// 备注：@nocow: 是否跳过 COW
 void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 			       enum bch_data_type type,
 			       const struct bkey_i *k,
 			       bool nocow, struct bch_dev **cas)
 {
+	// 备注：从extent键值中提取所有设备指针
+	// 备注：bch2_bkey_ptrs_c返回一个包含所有ptr的迭代器结构
+	// 备注：这些ptr指向存储该extent副本的各个设备
 	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(k));
+	// 备注：n指向当前处理的bio（可能是原始bio或克隆的bio）
 	struct bch_write_bio *n;
+	// 备注：根据数据类型确定引用方向
+	// 备注：B树数据使用READ引用（特殊处理），其他数据使用WRITE引用
 	unsigned ref_rw  = type == BCH_DATA_btree ? READ : WRITE;
+	// 备注：设备引用索引，用于追踪哪种类型的操作持有设备引用
+	// 备注：区分B树写入和普通IO写入
 	unsigned ref_idx = type == BCH_DATA_btree
 		? (unsigned) BCH_DEV_READ_REF_btree_node_write
 		: (unsigned) BCH_DEV_WRITE_REF_io_write;
 
+	// 备注：调试断言：确保文件系统不是只读模式
 	BUG_ON(c->opts.nochanges);
 	BUG_ON(nocow && !cas);
 
+	// 备注：步骤1：找到最后一个有效的设备指针
+	// 备注：这是为了优化：最后一个副本可以直接使用原始bio，无需克隆
+	// 备注：这样可以减少一次bio_alloc_clone的开销
 	const struct bch_extent_ptr *last = NULL;
 	bkey_for_each_ptr(ptrs, ptr)
 		if (ptr->dev != BCH_SB_MEMBER_INVALID)
 			last = ptr;
 
+	// 备注：确保至少有一个有效的设备指针
 	BUG_ON(!last);
 
 	/* For nocow, bkey_get_dev_iorefs would have bailed if it hit an
 	 * invalid ptr, so cas_idx stays in sync with the iterator. */
 	unsigned cas_idx = 0;
+	// 备注：步骤2：遍历所有设备指针，为每个副本提交bio
+	// 备注：这是多副本写入的核心循环
 	bkey_for_each_ptr(ptrs, ptr) {
+		// 备注：跳过无效的设备指针（设备可能已被移除）
 		if (ptr->dev == BCH_SB_MEMBER_INVALID)
 			continue;
 
@@ -1192,49 +1388,89 @@ void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
 		 * aren't retrying failed btree writes yet (due to device
 		 * removal/ro):
 		 */
+		// 备注：步骤3：获取设备引用
+		// 备注：设备引用防止在IO进行期间设备被移除
+		// 备注：nocow=true：已持有引用，只需确认
+		// 备注：nocow=false：需要获取新的引用
 		struct bch_dev *ca = nocow
 			? cas[cas_idx++]
 			: bch2_dev_get_ioref(c, ptr->dev, ref_rw, ref_idx);
 
+		// 备注：步骤4：bio克隆（多副本写入时）
+		// 备注：如不是最后一个ptr，需要克隆新的bio
+		// 备注：最后一个ptr可以直接使用原始wbio
 		if (ptr != last) {
+			// 备注：从replica_set内存池中分配克隆的bio
+			// 备注：GFP_NOFS确保不会触发文件系统相关的内存回收
 			n = to_wbio(bio_alloc_clone(NULL, &wbio->bio, GFP_NOFS, &c->replica_set));
 
+			// 备注：复制原始bio的关键字段到克隆的bio
+			// 备注：确保所有副本共享相同的完成回调和上下文
 			n->bio.bi_end_io	= wbio->bio.bi_end_io;
 			n->bio.bi_private	= wbio->bio.bi_private;
+			// 备注：建立父子关系，用于引用计数管理
 			n->parent		= wbio;
+			// 备注：标记这是分裂出来的bio
 			n->split		= true;
+			// 备注：不使用反弹缓冲区
 			n->bounce		= false;
+			// 备注：标记需要在完成时释放bio
 			n->put_bio		= true;
+			// 备注：复制操作标志
 			n->bio.bi_opf		= wbio->bio.bi_opf;
+			// 备注：增加父bio的引用计数
+			// 备注：每个子bio完成时会减少此计数
+			// 备注：当计数归零时，父bio的回调被触发
 			bio_inc_remaining(&wbio->bio);
 		} else {
+			// 备注：最后一个副本直接使用原始bio
 			n = wbio;
 			n->split		= false;
 		}
 
+		// 备注：步骤5：设置bio的元数据
+		// 备注：这些信息用于IO完成时的处理和追踪
+		// 备注：文件系统上下文
 		n->c			= c;
 		n->ca			= ca;
+		// 备注：目标设备ID
 		n->dev			= ptr->dev;
+		// 备注：是否为COW写入
 		n->nocow		= nocow;
+		// 备注：记录提交时间戳（用于性能统计）
 		n->submit_time		= local_clock();
+		// 备注：记录inode内的偏移（用于错误报告）
 		n->inode_offset		= bkey_start_offset(&k->k);
+		// 备注：如为nocow模式，记录桶号（用于分配器）
 		if (nocow)
 			n->nocow_bucket	= PTR_BUCKET_NR(ca, ptr);
+		// 备注：设置bio的目标扇区（从extent ptr获取）
 		n->bio.bi_iter.bi_sector = ptr->offset;
 
+		// 备注：步骤6：提交bio到块层
+		// 备注：只有成功获取设备引用时才实际提交
 		if (likely(n->ca)) {
 			this_cpu_add(ca->io_done->sectors[WRITE][type],
 				     bio_sectors(&n->bio));
 
+			// 备注：设置bio的目标块设备
 			bio_set_dev(&n->bio, ca->disk_sb.bdev);
 
+			// 备注：调试用：如设置了no_data_io选项
+			// 备注：模拟IO完成而不实际提交到块层
 			if (type != BCH_DATA_btree && unlikely(c->opts.no_data_io)) {
 				bio_endio(&n->bio);
 				continue;
 			}
 
+			// 备注：实际提交bio到Linux块层
+			// 备注：从这里开始，bio的生命周期由块层管理
+			// 备注：完成后会调用n->bio.bi_end_io回调
 			submit_bio(&n->bio);
 		} else {
+			// 备注：未能获取设备引用（设备可能已被移除或离线）
+			// 备注：设置错误状态并立即完成bio
+			// 备注：这将触发错误处理路径
 			n->bio.bi_status	= BLK_STS_REMOVED;
 			bio_endio(&n->bio);
 		}
@@ -1305,6 +1541,7 @@ static noinline int bch2_write_drop_io_error_ptrs(struct bch_write_op *op)
  * __bch2_write_index - after a write, update index to point to new data
  * @op:		bch_write_op to process
  */
+// 备注：写入后，更新索引指向新数据
 static void __bch2_write_index(struct bch_write_op *op)
 {
 	struct bch_fs *c = op->c;
@@ -1339,6 +1576,7 @@ static void __bch2_write_index(struct bch_write_op *op)
 	}
 
 	if (!bch2_keylist_empty(keys)) {
+		// 备注：获取 keys 总扇区大小
 		u64 sectors_start = keylist_sectors(keys);
 
 		ret = !(op->flags & BCH_WRITE_move)
@@ -1348,6 +1586,7 @@ static void __bch2_write_index(struct bch_write_op *op)
 		BUG_ON(bch2_err_matches(ret, BCH_ERR_transaction_restart));
 		BUG_ON(keylist_sectors(keys) && !ret);
 
+		// 备注：计算写入大小
 		op->written += sectors_start - keylist_sectors(keys);
 
 		if (unlikely(ret && !bch2_err_matches(ret, EROFS))) {
@@ -1407,6 +1646,29 @@ static inline void wp_update_state(struct write_point *wp, bool running)
 	__wp_update_state(wp, state);
 }
 
+// 备注：bch2_write_index (CLOSURE_CALLBACK) - IO 完成后，索引更新阶段的入口
+// 备注：
+// 备注：所有副本的 IO 都完成后，通过 closure 机制触发此回调。
+// 备注：它将写操作注册到 write_point 的 writes 列表，然后排队到 workqueue 中
+// 备注：由 bch2_write_point_do_index_updates() 执行实际的索引更新。
+// 备注：
+// 备注：执行路径：
+// 备注：  异步路径:
+// 备注：    IO 完成 → closure → bch2_write_index
+// 备注：    → 将 op 加入 wp->writes 列表
+// 备注：    → queue_work(wq, &wp->index_update_work)
+// 备注：    → bch2_write_point_do_index_updates()
+// 备注：      → __bch2_write_index() 更新 extent B 树
+// 备注：      → 如果数据未全部提交 → __bch2_write() 继续下一轮
+// 备注：      → 否则 → bch2_write_done() 完成
+// 备注：
+// 备注：  同步路径 (BCH_WRITE_sync):
+// 备注：    IO 完成后在 __bch2_write 中直接 closure_sync
+// 备注：    然后立即调用 __bch2_write_index，不经过 workqueue
+// 备注：
+// 备注：write_point 状态机：
+// 备注：  stopped → waiting_io → waiting_work → stopped
+// 备注：  wp_update_state 控制 workqueue 的启停
 static CLOSURE_CALLBACK(bch2_write_index)
 {
 	closure_type(op, struct bch_write_op, cl);
@@ -1464,6 +1726,26 @@ void bch2_write_point_do_index_updates(struct work_struct *work)
 	}
 }
 
+// 备注：bch2_write_endio - 单副本 IO 完成回调
+// 备注：
+// 备注：每个副本的 bio 完成后触发。写操作可能有多个副本（replica），
+// 备注：每个副本对应一个独立的 bio。所有副本都完成后才进入索引更新阶段。
+// 备注：
+// 备注：执行逻辑：
+// 备注：  1. 记录 IO 完成时间到统计 (bch2_account_io_completion)
+// 备注：  2. 如果 IO 失败：记录设备错误到 op->wbio.failed，设置 io_error 标志
+// 备注：  3. 如果是 nocow 写入：解锁 nocow bucket 并标记需要 flush
+// 备注：  4. 释放设备 io_ref (BCH_DEV_WRITE_REF_io_write)
+// 备注：  5. 如果使用 bounce buffer：释放 bounce pages
+// 备注：  6. 如果是 split bio（复制到多个设备）：
+// 备注：     - 子 bio: bio_put 释放
+// 备注：     - 父 bio: bio_endio 继续触发父 bio 完成
+// 备注：     否则: closure_put 减少 op 引用计数
+// 备注：
+// 备注：并发模型：在块层完成上下文中执行，可能从任意 CPU 调用。
+// 备注：  closure_put 递减引用计数，所有副本都 complete 后才继续。
+// 备注：
+// 备注：io 结束回调
 static void bch2_write_endio(struct bio *bio)
 {
 	struct closure *cl		= bio->bi_private;
@@ -1704,6 +1986,44 @@ csum_err:
 	return bch_err_throw(c, data_write_csum);
 }
 
+// 备注：bch2_write_extent - COW 写入数据转换管线
+// 备注：
+// 备注：这是 COW 写入路径中的数据转换阶段。对单次分配到的磁盘空间，
+// 备注：对数据进行压缩/加密/校验和计算，并构建 extent key。
+// 备注：
+// 备注：执行流程：
+// 备注：
+// 备注：  1. [内存准备] 是否需要 bounce buffer？
+// 备注：     条件（任一满足需 bounce）:
+// 备注：     · EC 编码启用 (ec_buf != NULL)
+// 备注：     · 压缩启用 (compression_opt != 0)
+// 备注：     · 校验和启用但页面不稳定 (csum && !pages_stable)
+// 备注：     · 加密启用但数据不归我们所有
+// 备注：     bounce 原因：加密/校验和需要稳定的缓冲区，用户页面可能在 IO 中被修改
+// 备注：
+// 备注：  2. [数据转换循环] do { } while (more)
+// 备注：     a. 压缩 (bch2_bio_compress)
+// 备注：        成功 → 设置 crc.compression_type
+// 备注：        不可压缩 → 标记 incompressible，直通复制
+// 备注：     b. 校验和计算 (bch2_checksum_create, 在 crc 中)
+// 备注：     c. 构建 extent 元数据 (init_append_extent)
+// 备注：        写入 insert_keys 列表，等待索引更新阶段提交到 B 树
+// 备注：     d. 如果还有数据未处理 → 继续循环
+// 备注：
+// 备注：  3. [输出] 设置 *_dst = dst bio
+// 备注：     上层 __bch2_write 获取 dst bio 后设置 endio 回调并提交 IO
+// 备注：
+// 备注：数据已编码路径 (BCH_WRITE_data_encoded):
+// 备注：  如果数据已经是编码格式（如从 EC 重建来的），
+// 备注：  走 bch2_write_prep_encoded_data() 处理，
+// 备注：  不经过常规的压缩/加密管线。
+// 备注：
+// 备注：图例：没有固定顺序，但压缩 → 校验和 → extent key 是典型路径
+// 备注：关键设计：
+// 备注：  · bounce buffer 保证校验和稳定性（核心设计决策）
+// 备注：  · 压缩在校验和之前（先压缩再校验，更高效）
+// 备注：  · dst_len 受 wp->sectors_free 限制（不超过分配的磁盘空间）
+// 备注：  · page_alloc_failed 时缩小写入量，确保剩余 IO 能完成
 static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 			     struct bio **_dst)
 {
@@ -2096,6 +2416,40 @@ static int bch2_inode_get_i_size(struct btree_trans *trans, struct bpos inode_po
 	return 0;
 }
 
+// 备注：bch2_nocow_write - Nocow 就位覆盖写入
+// 备注：
+// 备注：Nocow 写入跳过了 COW 路径的完整管线（不需要分配新空间、压缩、加密、
+// 校验和计算），直接在已有 extent 位置覆盖写入数据。
+// 备注：
+// 备注：使用条件：
+// 备注：  · op->opts.nocow && c->opts.nocow_enabled（上层判断）
+// 备注：  · 不是数据迁移操作 (!BCH_WRITE_move)
+// 备注：
+// 备注：执行流程：
+// 备注：
+// 备注：  1. 获取 snapshot 和 i_size，检测是否需要扩展文件大小
+// 备注：     如果需要扩展 → 设置 BCH_WRITE_convert_unwritten
+// 备注：
+// 备注：  2. 循环遍历 extents B 树，对每个 io_size 范围内的已有 extent：
+// 备注：     a. 获取已有 extent 的 disk pointer (bkey_s_c)
+// 备注：     b. 锁定 nocow bucket (BUCKET_NOCOW_LOCK_UPDATE)
+// 备注：     c. 获取设备 io_ref（防止设备热拔出）
+// 备注：     d. 构建覆盖写入的 bio，直接提交到块层
+// 备注：     e. IO 完成回调 bch2_nocow_write_done → 解锁 nocow bucket
+// 备注：
+// 备注：  3. 覆盖文件末尾（extend 场景）：
+// 备注：     → bch2_nocow_write_convert_unwritten
+// 备注：     需要创建新的 extent key 并插入 B 树
+// 备注：
+// 备注：关键设计决策：
+// 备注：  · 无校验和 = 无法被 scrub 检测、无法自修复
+// 备注：  · 无加密 = 加密文件系统上明文存储
+// 备注：  · 无压缩 = 写入放大最小化
+// 备注：  · 需要 per-bucket nocow lock 防止与 move 路径竞态
+// 备注：  · 快照/共享 extent 时自动回退到 COW
+// 备注：
+// 备注：适用场景：数据库、VM 等自行管理数据完整性的工作负载
+// 备注：
 /* returns false if fallaback to cow write path required */
 static bool bch2_nocow_write(struct bch_write_op *op)
 {
@@ -2292,6 +2646,60 @@ err_bucket_stale:
 	goto out;
 }
 
+// 备注：用户态数据写入的核心函数 —— COW（写时复制）路径。
+// 备注：
+// 备注：用户数据写盘整体流程（不走 journal）:
+// 备注：  1) 前台线程: bch2_write() → __bch2_write()
+// 备注：  2) 分配空间: bch2_alloc_sectors_req()   ← 分配桶空间
+// 备注：  3) 编码管道:
+// 备注：      分配扇区后,对数据进行压缩(lz4/zstd/gzip)→
+// 备注：      加密(ChaCha20)→ 校验和(CRC32C/XXHASH)
+// 备注：  4) 提交 I/O: bch2_submit_wbio_replicas()
+// 备注：      → submit_bio() → generic_make_request()
+// 备注：      → fops->write() → pwrite(bd_fd, data)  ← 直接写盘
+// 备注：  5) 写入索引: bch2_write_index()
+// 备注：      → bch2_journal_key_insert()           ← 把 extent key 插 journal
+// 备注：      → btree_key_insert()                   ← 写入 btree
+// 备注：
+// 备注：关键理解:
+// 备注：  - 用户数据本身（步骤 3-4）由前台线程同步写出，不经过 journal
+// 备注：  - journal 只记录 metadata（extent key 插入 btree 这个操作）
+// 备注：  - 所以"journal = 数据写盘"这个直觉在 bcachefs 中不完全准确
+// 备注：  - journal 的写盘是 journal buf 写，是 metadata 日志，不是数据
+// 备注：
+// 备注：__bch2_write - 写入主循环
+// 备注：
+// 备注：这是写入操作的核心循环逻辑。每次循环处理一个 extent 的数据：
+// 备注：
+// 备注：执行流程：
+// 备注：  ① 检查 open_bucket 是否已满（最多 nr_replicas + 1 个，+1 给缓存层）
+// 备注：  ② 分配磁盘空间 (bch2_alloc_sectors_req + alloc_request_get)
+// 备注：     如果分配阻塞且为同步写入 → 等待分配器（bch2_wait_on_allocator）
+// 备注：     ⚠️ 等待分配器时会先执行 __bch2_write_index 提交已完成的 IO
+// 备注：  ③ 获取 open_bucket (bch2_open_bucket_get)
+// 备注：  ④ 数据转换处理 (bch2_write_extent)：压缩、加密、校验和
+// 备注：  ⑤ 设置 bio 回调 (bch2_write_endio)
+// 备注：  ⑥ 提交 bio 到所有副本 (bch2_submit_wbio_replicas)
+// 备注：  ⑦ 循环继续处理下一段数据 或 全部提交完毕
+// 备注：
+// 备注：同步/异步分支：
+// 备注：  BCH_WRITE_sync:
+// 备注：    closure_sync 等待所有 IO 完成
+// 备注：    → __bch2_write_index 更新索引
+// 备注：    → 如果数据未全部提交，跳到 again 继续
+// 备注：    → bch2_write_done 完成
+// 备注：  !BCH_WRITE_sync (异步):
+// 备注：    → bch2_write_queue 注册到 write_point
+// 备注：    → bch2_write_index 在 workqueue 中执行索引更新
+// 备注：
+// 备注：关键设计：
+// 备注：  · wait_on_allocator_sync: 同步写入或首次提交时，等待分配器阻塞
+// 备注：  · open_bucket 有上限（每个 dev 同时打开的 bucket 数有限）
+// 备注：  · 循环可能因分配器阻塞而暂停（non-fatal），等待 IO 完成后重试
+// 备注：  · nocow 路径（opts.nocow）从循环中提前分流到 bch2_nocow_write
+// 备注：nocow 路径:
+// 备注：  如果 op->opts.nocow && c->opts.nocow_enabled:
+// 备注：  走 bch2_nocow_write() 直接覆盖已有 extent，跳过分配器
 static void __bch2_write(struct bch_write_op *op)
 {
 	struct bch_fs *c = op->c;
@@ -2394,6 +2802,7 @@ err:
 			}
 		}
 
+		// 备注：设置 io 回调
 		bio->bi_end_io	= bch2_write_endio;
 		bio->bi_private	= &op->cl;
 		bio->bi_opf |= REQ_OP_WRITE;
@@ -2428,6 +2837,7 @@ err:
 	}
 }
 
+// 备注：内联数据模式写入
 static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 {
 	struct bio *bio = &op->wbio.bio;
@@ -2441,6 +2851,7 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 	op->flags |= BCH_WRITE_wrote_data_inline;
 	op->flags |= BCH_WRITE_submitted;
 
+	// 备注：设置特征为内联数据
 	bch2_check_set_feature(op->c, BCH_FEATURE_inline_data);
 
 	ret = bch2_keylist_realloc(&op->insert_keys, op->inline_keys,
@@ -2451,9 +2862,12 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 		goto err;
 	}
 
+	// 备注：获取 bio 扇区大小
 	sectors = bio_sectors(bio);
+	// 备注：加上内联数据大小
 	op->pos.offset += sectors;
 
+	// 备注：内联数据初始化
 	id = bkey_inline_data_init(op->insert_keys.top);
 	id->k.p		= op->pos;
 	id->k.bversion	= op->version;
@@ -2524,8 +2938,10 @@ CLOSURE_CALLBACK(bch2_write)
 	if (op->flags & BCH_WRITE_only_specified_devs)
 		op->flags |= BCH_WRITE_alloc_nowait;
 
+	// 备注：写开始时间
 	op->start_time = local_clock();
 	bch2_keylist_init(&op->insert_keys, op->inline_keys);
+	// 备注：初始化 bch_write_bio.wbio
 	wbio_init(bio)->put_bio = false;
 
 	if (unlikely(bio->bi_iter.bi_size & (c->opts.block_size - 1))) {
@@ -2536,12 +2952,14 @@ CLOSURE_CALLBACK(bch2_write)
 	}
 
 	if (c->opts.nochanges) {
+		// 备注：只读
 		op->error = bch_err_throw(c, erofs_no_writes);
 		goto err;
 	}
 
 	if (!(op->flags & BCH_WRITE_move) &&
 	    !enumerated_ref_tryget(&c->writes, BCH_WRITE_REF_write)) {
+		// 备注：没有写
 		op->error = bch_err_throw(c, erofs_no_writes);
 		goto err;
 	}
@@ -2553,6 +2971,7 @@ CLOSURE_CALLBACK(bch2_write)
 
 	if (c->opts.inline_data &&
 	    data_len <= min(block_bytes(c) / 2, 1024U)) {
+		// 备注：直接内联写
 		bch2_write_data_inline(op, data_len);
 		return;
 	}

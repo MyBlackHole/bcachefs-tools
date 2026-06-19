@@ -92,6 +92,7 @@ static noinline int extent_back_merge(struct btree_trans *trans,
  * When deleting, check if we need to emit a whiteout (because we're overwriting
  * something in an ancestor snapshot)
  */
+// 备注：删除时，检查我们是否需要发出whiteout（因为我们正在覆盖祖先快照中的某些内容）
 static int need_whiteout_for_snapshot(struct btree_trans *trans,
 				      enum btree_id btree_id, struct bpos pos)
 {
@@ -359,6 +360,9 @@ btree_trans_update_by_path(struct btree_trans *trans,
 	 * Pending updates are kept sorted: first, find position of new update,
 	 * then delete/trim any updates the new update overwrites:
 	 */
+	// 备注：待定更新保持排序:
+	// 备注：首先, 找到新更新的位置,
+	// 备注：然后删除/修剪新更新覆盖的任何更新:
 	for (i = trans->updates; i < trans->updates + trans->nr_updates; i++) {
 		cmp = btree_insert_entry_cmp(&n, i);
 		if (cmp <= 0)
@@ -808,6 +812,8 @@ int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id btree
  *
  * Range is a half open interval - [start, end)
  */
+// 备注：bch_btree_delete_range - 删除给定范围内的所有内容
+// 备注：范围是半开区间 - [开始，结束)
 int bch2_btree_delete_range(struct bch_fs *c, enum btree_id id,
 			    struct bpos start, struct bpos end,
 			    enum btree_iter_update_trigger_flags flags)

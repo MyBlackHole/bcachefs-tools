@@ -6,6 +6,20 @@
 #include "fs/fs/inode.h"
 #include "fs/alloc/buckets.h"
 
+// ============================================
+// 备注：FUSE mount C shim 头文件
+//
+// 备注：为 Rust FUSE mount 命令提供 C wrapper 函数。
+// 备注：这些 shims 封装了使用 static inline 函数、宏或复杂类型
+// 备注：（qstr, btree_trans, closures）的内核操作。
+//
+// 备注：功能分类：
+// 备注：  - 线程初始化：rust_fuse_ensure_current / rcu 注册
+// 备注：  - Inline wrapper：block_bytes, inode_nlink_get, time 转换
+// 备注：  - 文件系统操作：lookup, create, unlink, rename, link, setattr
+// 备注：  - 目录读取：readdir（通过函数指针回调）
+// 备注：  - 统计：usage_read_short, count_inodes
+// ============================================
 /*
  * C shims for the Rust FUSE mount command.
  *

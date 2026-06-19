@@ -1,4 +1,28 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+// 备注：bcachefs B-tree 类型定义
+// 备注：
+// 备注：本文件定义了 B-tree 系统的核心数据类型，包括：
+// 备注：
+// 备注：1. B-tree 节点结构 (struct btree)
+// 备注：- 内存中的 B-tree 节点，包含多个 bset（排序键集合）
+// 备注：- 支持最多 3 个 bset：set[0] 为已持久化的数据，set[1]/set[2] 为内存中的增量
+// 备注：
+// 备注：2. B-tree 迭代器 (struct btree_iter, struct btree_path)
+// 备注：- btree_iter: 高级迭代接口，供外部使用
+// 备注：- btree_path: 低级路径结构，记录从根到叶的访问路径和锁状态
+// 备注：
+// 备注：3. 事务机制 (struct btree_trans)
+// 备注：- 提供 ACID 语义：通过日志和锁机制保证原子性和一致性
+// 备注：- 支持乐观并发：事务重启机制处理锁冲突
+// 备注：
+// 备注：4. B-tree 缓存 (struct bch_fs_btree_cache)
+// 备注：- 内存缓存常用节点，避免磁盘 I/O
+// 备注：- LRU 淘汰策略，支持 shrinker 回收
+// 备注：
+// 备注：架构特点：
+// 备注：- 使用 SIX 锁（shared/intent/exclusive）实现细粒度并发控制
+// 备注：- bset 机制支持增量更新，避免频繁磁盘写入
+// 备注：- 事务通过 path 引用计数和锁顺序排序避免死锁
 #ifndef _BCACHEFS_BTREE_TYPES_H
 #define _BCACHEFS_BTREE_TYPES_H
 
@@ -28,8 +52,31 @@ struct lock_graph;
 
 /* Btree nodes: */
 
+// 备注：MAX_BSETS - B-tree 节点最大 bset 数量
+// 备注：
+// 备注：B-tree 节点内最多支持 3 个 bset：
+// 备注：- set[0]: 已写入磁盘的所有 bset 合并后的数据
+// 备注：- set[1]: 内存中未写入磁盘的增量 bkey
+// 备注：- set[2]: 当 set[1] 超过 4KB 时扩展的额外 bset (见 bch2_btree_node_prep_for_write)
+// 备注：
+// 备注：这种设计允许：
+// 备注：1. 增量更新：set[1] 收集内存中的修改，避免频繁刷盘
+// 备注：2. 合并策略：定期将多个 bset 合并到 set[0]（compaction）
+// 备注：3. 崩溃恢复：通过 journal 重放 set[1] 中的未持久化数据
 #define MAX_BSETS		3U
 
+// 备注：struct btree_nr_keys - B-tree 节点键计数结构
+// 备注：
+// 备注：存储节点中有效键的数量信息，用于：
+// 备注：- 跟踪 live_u64s：压缩后存活数据的总大小（单位 u64）
+// 备注：- 跟踪每个 bset 的键数量 (bset_u64s[])
+// 备注：- 支持 packed/unpacked 格式转换
+// 备注：
+// 备注：字段说明：
+// 备注：- live_u64s: 压缩后存活数据的总大小（compaction 后的大小）
+// 备注：- bset_u64s[MAX_BSETS]: 每个 bset 的键数据大小
+// 备注：- packed_keys: 压缩格式的键数量
+// 备注：- unpacked_keys: 解压后的键数量
 struct btree_nr_keys {
 
 	/*
@@ -51,14 +98,24 @@ struct bset_tree {
 	 * better: see comments in bset.c at cacheline_to_bkey() for
 	 * details
 	 */
+	// 备注：我们在数组中构造一个二叉树，
+	// 备注：就像数组从 1 开始一样，
+	// 备注：以便更好地在相同的缓存行上排列：
+	// 备注：有关详细信息，
+	// 备注：请参阅 bset.c 中的 cacheline_to_bkey() 注释
 
 	/* size of the binary tree and prev array */
+	// 备注：二叉树和前一个数组的大小?
 	u16			size;
 
 	/* function of size - precalculated for to_inorder() */
+	// 备注：大小函数 - 为 to_inorder() 预先计算
 	u16			extra;
 
+	// 备注：data_offset/end_offset 指出
+	// 备注：本 bset_tree(bset) 在 btree::data 中的开始结束偏移
 	u16			data_offset;
+	// 备注：辅助数据(二叉树)在 btree::data 的偏移量
 	u16			aux_data_offset;
 	u16			end_offset;
 };
@@ -89,6 +146,31 @@ enum btree_node_cache_state {
 	BTREE_NODE_CACHE_DIRTY,		/* on bc->live[pinned].dirty; hashed; has data */
 };
 
+// 备注：struct btree - B-tree 节点（内存中）
+// 备注：
+// 备注：代表一个 B-tree 节点，包含：
+// 备注：- 节点元数据：btree_id、level、格式、键数量等
+// 备注：- 节点数据：data 指针指向磁盘格式的 btree_node
+// 备注：- 多个 bset：支持增量更新和 compaction
+// 备注：- 锁状态：通过 six_lock 实现并发控制
+// 备注：
+// 备注：内存布局：
+// 备注：|<----------- 256KB (节点大小) ----------->|
+// 备注：|------------------------------------------|
+// 备注：| btree_node (磁盘格式)                     | <- data 指针
+// 备注：|   - bset[0]: 已持久化的键数据             |
+// 备注：|------------------------------------------|
+// 备注：| 空闲空间                                  |
+// 备注：|------------------------------------------|
+// 备注：| whiteout 区域 (反向生长)                  | <- whiteout_u64s
+// 备注：|==========================================|
+// 备注：| bset[1]: 内存中的增量键数据               |
+// 备注：| bset[2]: 额外增量 (可选)                  |
+// 备注：
+// 备注：关键设计：
+// 备注：- 双写缓冲：writes[0] 和 writes[1] 支持原子替换
+// 备注：- 异步分裂：write_blocked 列表跟踪阻塞的更新
+// 备注：- LRU 缓存：list 字段用于 LRU 链表管理
 struct btree {
 	struct btree_bkey_cached_common c;
 
@@ -96,7 +178,10 @@ struct btree {
 	u64			hash_val;
 
 	unsigned long		flags;
+	// 备注：已写入磁盘计数(单位是扇区)
 	u16			written;
+	// 备注：当前有多少 set
+	// 备注：一个 btree_node(内部有 bset) 多个 btree_node_entry (内部有 bset)
 	u8			nsets;
 	u8			nr_key_bits;
 	u16			version_ondisk;
@@ -131,7 +216,18 @@ struct btree {
 		u8	shift_right;	/* 64 - bits, or 64 if field has no bits in packed */
 	} unpack[BKEY_NR_FIELDS];
 
+	/*
+	 * <---------- 256KB ----------->
+	 * ------------------------------
+	 * ||||||||||||****           ***
+	 * ------------------------------
+	 *            ^               ^
+	 *            |               b->whiteout_u64s
+	 *            b->written
+	 * btree_node - btree_node_entry -  btree_node_entry - ....
+	 */
 	struct btree_node	*data;
+	// 备注：二叉树, 每个 bset 一个
 	void			*aux_data;
 
 	/*
@@ -141,10 +237,17 @@ struct btree {
 	 * to the memory we have allocated for this btree node. Additionally,
 	 * set[0]->data points to the entire btree node as it exists on disk.
 	 */
+	// 备注：排序键的集合, 一个二叉搜索树
+	// 备注：set[0]: 已写入磁盘的全部 bsets 合并在内存的一个 set
+	// 备注：set[1]: 未写入磁盘的 bkeys 的 bset
+	// 备注：set[2]: set[1] 过大( > 4kb, bch2_btree_node_prep_for_write)扩充支持]
 	struct bset_tree	set[MAX_BSETS];
 
 	struct btree_nr_keys	nr;
 	u16			sib_u64s[2];
+	// 备注：未写入的 whiteouts 计数(单位 u64)
+	// 备注：这些 whiteout 掉的 bkeys 写入从
+	// 备注：btree::data 尾部起反向生长的空间
 	u16			whiteout_u64s;
 	u8			byte_order;
 	u8			unpack_fn_len;
@@ -152,6 +255,9 @@ struct btree {
 	struct btree_write	writes[2];
 
 	/* Key/pointer for this btree node */
+	// 备注：指向该 btree 节点的键/指针
+	// 备注：
+	// 备注：父节点的 key value 的拷贝
 	__BKEY_PADDED(key, BKEY_BTREE_PTR_VAL_U64s_MAX);
 
 	/*
@@ -229,6 +335,7 @@ static inline size_t btree_cache_list_nr(const struct btree_cache_list *l)
 	return l->nr_clean + l->nr_dirty;
 }
 
+// 备注：树的根结构
 struct btree_root {
 	struct btree		*b;
 
@@ -257,6 +364,7 @@ struct bch_fs_btree_cache {
 	DARRAY(struct btree_root) roots_extra;
 	struct mutex		root_lock;
 
+	// 备注：记录 btree 节点的缓存
 	struct rhashtable	table;
 	bool			table_init_done;
 	/*
@@ -332,6 +440,7 @@ static inline size_t btree_cache_nr_dirty(const struct bch_fs_btree_cache *bc)
 
 struct btree_node_iter {
 	struct btree_node_iter_set {
+		// 备注：k == end 代表迭代到最后了
 		u16	k, end;
 	} data[MAX_BSETS];
 };
@@ -486,6 +595,9 @@ static inline unsigned long btree_path_ip_allocated(struct btree_path *path)
  * btree_path: the low level path to a btree node, holds locks.
  *
  * Multiple iterators can share the same btree_path via refcounting.
+ *
+ * bch2_trans_node_iter_class_init
+ * bch2_trans_iter_exit
  */
 struct btree_iter {
 	struct btree_trans	*trans;
@@ -500,13 +612,19 @@ struct btree_iter {
 	u16			flags;
 
 	/* When we're filtering by snapshot, the snapshot ID we're looking for: */
+	// 备注：当我们按快照过滤时，我们要查找的快照 ID:
 	unsigned		snapshot;
 
+	// 备注：当前迭代器位置
 	struct bpos		pos;
 	/*
 	 * Current unpacked key - so that bch2_btree_iter_next()/
 	 * bch2_btree_iter_next_slot() can correctly advance pos.
 	 */
+	// 备注：Current unpacked key - so that bch2_btree_iter_next()/
+	// 备注：bch2_btree_iter_next_slot() can correctly advance pos.
+	// 备注：
+	// 备注：内部树的迭代位置
 	struct bkey		k;
 
 	/* BTREE_ITER_with_journal: */
@@ -552,33 +670,67 @@ static inline struct bpos btree_node_pos(struct btree_bkey_cached_common *b)
 
 /* Transaction types: */
 
+// 备注：struct btree_insert_entry - 单个B树更新条目(事务中的待处理更新)
+// 备注：
+// 备注：每个 btree_insert_entry 代表事务中一个待处理的B树插入/更新/删除操作。
+// 备注：这些条目被收集在 trans->updates 数组中，在事务提交时原子性应用。
+// 备注：
+// 备注：生命周期:
+// 备注：1. 创建: bch2_trans_update() 分配并初始化 entry
+// 备注：2. 排序: 按 (sort_order, cached, level, pos) 排序以确保正确应用顺序
+// 备注：3. 触发器: bch2_trans_commit_run_triggers() 执行 insert/overwite 触发器
+// 备注：4. 提交: do_bch2_trans_commit() 将 entry 写入 btree 节点
+// 备注：5. 清理: bch2_trans_reset_updates() 释放 path 引用并重置 trans
 struct btree_insert_entry {
+	// 备注：BTREE_UPDATE_* 标志位
 	unsigned		flags;
+	// 备注：排序优先级，控制更新应用顺序
 	u8			sort_order;
+	// 备注：键类型(BKEY_TYPE_*)
 	u8			bkey_type;
+	// 备注：目标B树ID
 	enum btree_id		btree_id:8;
+	// 备注：B树层级(0=叶子)
 	u8			level:3;
+	// 备注：是否更新键缓存
 	bool			cached:1;
+	// 备注：insert触发器是否已运行
 	bool			insert_trigger_run:1;
+	// 备注：overwrite触发器是否已运行
 	bool			overwrite_trigger_run:1;
+	// 备注：键缓存是否已刷新
 	bool			key_cache_already_flushed:1;
+	// 备注：是否正在刷新键缓存
 	bool			key_cache_flushing:1;
 	/*
 	 * @old_k may be a key from the journal or the key cache;
 	 * @old_btree_u64s always refers to the size of the key being
 	 * overwritten in the btree:
 	 */
+	// 备注：@old_k: 被覆盖的原始键(用于触发器比较和日志记录)
+	// 备注：@old_btree_u64s: 原始键在 btree 中的大小(u64s单位)
+	// 备注：@old_v: 原始键的值指针
+	// 备注：
+	// 备注：注意: @old_k 可能来自日志或键缓存，不一定反映当前 btree 状态。
+	// 备注：提交时会重新验证，如不一致则返回 RESTART 错误。
+	// 备注：原始键在 btree 中的大小(u64s单位)
 	u8			old_btree_u64s;
 	u8			k_buf_u64s;
+	// 备注：关联的 btree_path 索引
 	btree_path_idx_t	path;
+	// 备注：新键值(要插入的数据)
 	struct bkey_i		*k;
 	/* key being overwritten: */
+	// 备注：旧键值(用于触发器和日志)
 	struct bkey		old_k;
+	// 备注：旧值指针
 	const struct bch_val	*old_v;
+	// 备注：分配点的指令地址(调试)
 	unsigned long		ip_allocated;
 };
 
 /* Number of btree paths we preallocate, usually enough */
+// 备注：我们预先分配的 B 树路径数量，通常足够
 #define BTREE_ITER_INITIAL		64
 /*
  * Lmiit for btree_trans_too_many_iters(); this is enough that almost all code
@@ -855,6 +1007,9 @@ static inline void set_btree_node_ ## flag(struct btree *b)		\
 static inline void clear_btree_node_ ## flag(struct btree *b)		\
 {	clear_bit(BTREE_NODE_ ## flag, &b->flags); }
 
+// 备注：set_btree_node_fake: 假 btree 节点
+// 备注：set_btree_node_need_rewrite: 需要重写的
+// 备注：*/
 BTREE_FLAGS()
 #undef x
 
@@ -903,6 +1058,7 @@ struct bch_fs_btree {
 
 	struct bio_set				bio;
 	mempool_t				fill_iter;
+	// 备注：worke 队列结构
 	struct workqueue_struct			*read_complete_wq;
 	struct ratelimit_state			read_errors_soft;
 	struct ratelimit_state			read_errors_hard;
@@ -911,6 +1067,7 @@ struct bch_fs_btree {
 
 	struct journal_entry_res		root_journal_res;
 
+	// 备注：btree 节点缓存
 	struct bch_fs_btree_cache		cache;
 	struct btree_evicted_size		evicted_size;
 	struct bch_fs_btree_key_cache		key_cache;
@@ -968,23 +1125,27 @@ static inline struct btree_write *btree_prev_write(struct btree *b)
 	return b->writes + (btree_node_write_idx(b) ^ 1);
 }
 
+// 备注：獲取最後一個 bset_tree
 static inline struct bset_tree *bset_tree_last(struct btree *b)
 {
 	EBUG_ON(!b->nsets);
 	return b->set + b->nsets - 1;
 }
 
+// 备注：通過偏移量獲取地址
 static inline void *
 __btree_node_offset_to_ptr(const struct btree *b, u16 offset)
 {
 	return (void *) ((u64 *) b->data + offset);
 }
 
+// 备注：通過地址獲取偏移量
 static inline u16
 __btree_node_ptr_to_offset(const struct btree *b, const void *p)
 {
 	u16 ret = (u64 *) p - (u64 *) b->data;
 
+	// 备注：確認偏移量是否正確
 	EBUG_ON(__btree_node_offset_to_ptr(b, ret) != p);
 	return ret;
 }
@@ -995,19 +1156,24 @@ static inline struct bset *bset(const struct btree *b,
 	return __btree_node_offset_to_ptr(b, t->data_offset);
 }
 
+// 备注：設置 bset 結束偏移量
 static inline void set_btree_bset_end(struct btree *b, struct bset_tree *t)
 {
 	t->end_offset =
 		__btree_node_ptr_to_offset(b, vstruct_last(bset(b, t)));
 }
 
+// 备注：設置 bset 開始偏移量結束偏移量
 static inline void set_btree_bset(struct btree *b, struct bset_tree *t,
 				  const struct bset *i)
 {
+	// 备注：設置 bset 開始偏移量
 	t->data_offset = __btree_node_ptr_to_offset(b, i);
+	// 备注：設置 bset 結束偏移量
 	set_btree_bset_end(b, t);
 }
 
+// 备注：首個 bset
 static inline struct bset *btree_bset_first(struct btree *b)
 {
 	return bset(b, b->set);

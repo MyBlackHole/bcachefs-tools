@@ -63,6 +63,7 @@ static inline void bch2_write_op_init(struct bch_write_op *op, struct bch_fs *c,
 CLOSURE_CALLBACK(bch2_write);
 void bch2_write_point_do_index_updates(struct work_struct *);
 
+// 备注：初始化 wbio 
 static inline struct bch_write_bio *wbio_init(struct bio *bio)
 {
 	struct bch_write_bio *wbio = to_wbio(bio);

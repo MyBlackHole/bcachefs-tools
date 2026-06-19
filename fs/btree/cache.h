@@ -141,6 +141,7 @@ static inline enum btree_node_cache_state btree_node_live_state(const struct btr
 	     _iter = 0;	_iter < (_tbl)->size; _iter++)			\
 		rht_for_each_entry_rcu((_b), (_pos), _tbl, _iter, hash)
 
+// 备注：字節大小
 static inline size_t btree_buf_bytes(const struct btree *b)
 {
 	return 1UL << b->byte_order;
@@ -198,6 +199,7 @@ static inline unsigned btree_id_nr_alive(struct bch_fs *c)
 	return BTREE_ID_NR + c->btree.cache.roots_extra.nr;
 }
 
+// 备注：取出 btree_id 对应的树root
 static inline struct btree_root *bch2_btree_id_root(struct bch_fs *c, unsigned id)
 {
 	if (likely(id < BTREE_ID_NR)) {

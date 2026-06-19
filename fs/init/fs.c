@@ -398,6 +398,20 @@ static void bch2_writes_disabled(struct enumerated_ref *writes)
 	wake_up(&bch2_read_only_wait);
 }
 
+// 备注：进入只读模式 / 停止写入的核心函数。
+// 备注：当 nostart=true 时（btree_test 等场景），BCH_FS_rw 从未被设置过，
+// 备注：所以这里立即 return，不会执行任何刷新 journal / 写盘操作。
+// 备注：
+// 备注：这也是 btree_test 不会落盘的根本原因：
+// 备注：  __bch2_fs_open() 中 nostart=true → 跳过 __bch2_fs_start()
+// 备注：  → BCH_FS_rw 位从未被置位 → bch2_fs_read_only() 第 1 行就 return
+// 备注：  → journal 不刷、superblock 不写、btree 不写 → 全部数据在内存中释放
+// 备注：
+// 备注：对比正常路径:
+// 备注：  bch2_fs_read_only() → bch2_journal_flush_all_pins()
+// 备注：  → journal 刷脏数据 → btree node 写盘
+// 备注：  → __bch2_fs_read_only() → bch2_ro_replay()
+// 备注：  → 最终写 superblock 标记 RO -> RW -> RO 状态转换
 void bch2_fs_read_only(struct bch_fs *c)
 {
 	if (!test_bit(BCH_FS_rw, &c->flags)) {
@@ -805,6 +819,7 @@ int bch2_fs_exit(struct bch_fs *c)
 	return ret;
 }
 
+// 备注：上线文件系统
 static int bch2_fs_online(struct bch_fs *c)
 {
 	lockdep_assert_held(&bch2_fs_list_lock);
@@ -813,10 +828,15 @@ static int bch2_fs_online(struct bch_fs *c)
 	    __bch2_uuid_to_fs(c->sb.uuid))
 		return bch_err_throw(c, filesystem_uuid_already_open);
 
+	// 备注：字符设备初始化
 	try(bch2_fs_chardev_init(c));
 
 	bch2_fs_debug_init(c);
 
+	// 备注：例如: /sys/fs/bcachefs/3e260aa0-ed73-4fca-a1aa-cbfb1ffbb23a/
+	// 备注：例如: /sys/fs/bcachefs/3e260aa0-ed73-4fca-a1aa-cbfb1ffbb23a/internal/
+	// 备注：例如: /sys/fs/bcachefs/3e260aa0-ed73-4fca-a1aa-cbfb1ffbb23a/options/
+	// 备注：...
 	if ((c->sb.multi_device
 	     ? kobject_add(&c->kobj, &bcachefs_kobj, "%pU", c->sb.user_uuid.b)
 	     : kobject_add(&c->kobj, &bcachefs_kobj, "%s", c->name)) ?:
@@ -838,10 +858,29 @@ static int bch2_fs_online(struct bch_fs *c)
 			return bch_err_throw(c, sysfs_init_error);
 
 	BUG_ON(!list_empty(&c->list));
+	// 备注：把 bch_fs 绑定到全局 bch_fs_list
 	list_add(&c->list, &bch2_fs_list);
 	return 0;
 }
 
+// 备注：初始化文件系统的 RW（读写）能力 —— 启动所有后台线程。
+// 备注：
+// 备注：这是 nostart=true 跳过的核心函数。
+// 备注：__bch2_fs_start() 在 go_rw_in_recovery() 为 true 时调用此函数，
+// 备注：然后才会继续走 bch2_fs_recovery() / bch2_fs_initialize()。
+// 备注：nostart=true 时整个 __bch2_fs_start() 被跳过，所以以下全部不启动。
+// 备注：
+// 备注：初始化的后台线程/组件:
+// 备注：  bch2_fs_btree_init_rw()   — btree GC / cache 后台线程
+// 备注：  bch2_fs_io_write_init()   — IO write 路径初始化
+// 备注：  bch2_fs_journal_init_rw()  — journal 后台写线程
+// 备注：  bch2_journal_reclaim_start() — journal reclaim 线程（单消费者）
+// 备注：  bch2_btree_write_buffer_start() — btree write buffer 刷入线程
+// 备注：  bch2_copygc_start()       — 碎片整理/GC 线程
+// 备注：  bch2_reconcile_start()    — reconcile 线程
+// 备注：
+// 备注：仅当这些线程全部就绪后 BCH_FS_rw 才被设置（见 __bch2_set_fs_ro_rw()），
+// 备注：文件系统才真正进入可读写状态。
 int bch2_fs_init_rw(struct bch_fs *c)
 {
 	if (test_bit(BCH_FS_rw_init_done, &c->flags))
@@ -1202,6 +1241,7 @@ static int bch2_fs_init(struct bch_fs *c, struct bch_sb *sb,
 
 	scoped_guard(memalloc_flags, PF_MEMALLOC_NOFS) {
 		guard(mutex)(&c->sb_lock);
+		// 备注：sb 赋值到 bch_fs
 		try(bch2_sb_to_fs(c, sb));
 
 		sb = c->disk_sb.sb;
@@ -1267,9 +1307,11 @@ static int bch2_fs_init(struct bch_fs *c, struct bch_sb *sb,
 		}
 	}
 
+	// 备注：设置默认参数
 	c->opts = bch2_opts_default;
 	try(bch2_opts_from_sb(&c->opts, sb));
 
+	// 备注：更新用户设置参数
 	bch2_opts_apply(&c->opts, *opts);
 
 #ifdef __KERNEL__
@@ -1290,6 +1332,7 @@ static int bch2_fs_init(struct bch_fs *c, struct bch_sb *sb,
 	}
 
 	if (c->sb.multi_device)
+		// 备注：打印 uuid
 		pr_uuid(&name, c->sb.user_uuid.b);
 	else
 		prt_bdevname(&name, sbs->data[0].bdev);
@@ -1372,11 +1415,13 @@ static int bch2_fs_init(struct bch_fs *c, struct bch_sb *sb,
 		prt_printf(out, "*** DEBUG BUILD ***\n");
 
 	scoped_guard(mutex, &bch2_fs_list_lock)
+		// 备注：上线文件系统
 		try(bch2_fs_online(c));
 
 	return 0;
 }
 
+// 备注：创建初始化文件系统实例
 static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts *opts,
 				    bch_sb_handles *sbs,
 				    struct printbuf *out)
@@ -1446,6 +1491,8 @@ static int bch2_fs_may_start(struct bch_fs *c, struct printbuf *err)
 	return 0;
 }
 
+// 备注：开始启动文件系统
+// 备注：处理恢复流程
 static int __bch2_fs_start(struct bch_fs *c, struct printbuf *err)
 {
 	BUG_ON(test_bit(BCH_FS_started, &c->flags));
@@ -1489,6 +1536,9 @@ static int __bch2_fs_start(struct bch_fs *c, struct printbuf *err)
 	 */
 	try(bch2_opts_hooks_pre_set(c));
 
+	// 备注：判断是否初始化过
+	// 备注：有则进入检查恢复逻辑
+	// 备注：没有则执行初始化
 	try(BCH_SB_INITIALIZED(c->disk_sb.sb)
 	    ? bch2_fs_recovery(c)
 	    : bch2_fs_initialize(c));
@@ -1498,6 +1548,7 @@ static int __bch2_fs_start(struct bch_fs *c, struct printbuf *err)
 	if (bch2_fs_init_fault("fs_start"))
 		return bch_err_throw(c, injected_fs_start);
 
+	// 备注：设置文件系统启动状态
 	set_bit(BCH_FS_started, &c->flags);
 	wake_up(&c->ro_ref_wait);
 
@@ -1585,6 +1636,7 @@ int bch2_fs_resize_on_mount(struct bch_fs *c)
 }
 
 /* Filesystem open: */
+// 备注：打开文件系统
 
 static inline int sb_cmp(struct bch_sb *l, struct bch_sb *r)
 {
@@ -1638,6 +1690,7 @@ static struct bch_fs *__bch2_fs_open(darray_const_str *devices,
 				     struct bch_opts *opts,
 				     struct printbuf *out)
 {
+	// 备注：声明 bch_sb_handle 数组
 	bch_sb_handles sbs = {};
 	struct bch_fs *c = NULL;
 	int ret = 0;
@@ -1650,6 +1703,7 @@ static struct bch_fs *__bch2_fs_open(darray_const_str *devices,
 		goto err;
 	}
 
+	// 备注：创建指定大小
 	ret = darray_make_room(&sbs, devices->nr);
 	if (ret)
 		goto err;
@@ -1661,6 +1715,7 @@ static struct bch_fs *__bch2_fs_open(darray_const_str *devices,
 		if (ret)
 			goto err;
 
+		// 备注：sb 添加到 sbs 数组
 		BUG_ON(darray_push(&sbs, sb));
 	}
 
@@ -1668,6 +1723,8 @@ static struct bch_fs *__bch2_fs_open(darray_const_str *devices,
 	if (ret)
 		goto err;
 
+	// 备注：每个 bch_fs 会记录所有设备信息
+	// 备注：分配初始化文件系统
 	c = bch2_fs_alloc(sbs.data->sb, opts, &sbs, out);
 	ret = PTR_ERR_OR_ZERO(c);
 	if (ret)
@@ -1681,7 +1738,18 @@ static struct bch_fs *__bch2_fs_open(darray_const_str *devices,
 		printbuf_reset(out);
 	}
 
+	// 备注：nostart = true 时跳过整个 __bch2_fs_start()，即不通电全部后台线程。
+	// 备注：后台线程包括: journal reclaim / btree gc / allocator / discard / writeback 等。
+	// 备注：不启动线程意味着:
+	// 备注：  1) BCH_FS_rw 不会被设置（__bch2_fs_start() 通过 __bch2_set_fs_ro_rw() 设置此标志）
+	// 备注：  2) journal 回收线程不运行，journal 条目只插不回收
+	// 备注：  3) 所有数据只能通过 journal key overlay 暂存（bch2_journal_key_insert()）
+	// 备注：  4) btree node 不会写盘、superblock 不会写盘
+	// 备注：
+	// 备注：nocow 用户在运行时动态设置（如 btree_test），nocow = true 时
+	// 备注：bch2_trans_commit() 会走不同的路径，不产生 COW 操作。
 	if (!c->opts.nostart) {
+		// 备注：启动文件系统
 		ret = __bch2_fs_start(c, out);
 		c->recovery_task = NULL;
 		if (ret)
@@ -1721,6 +1789,7 @@ struct bch_fs *bch2_fs_open(darray_const_str *devices,
 }
 
 /* Global interfaces/init */
+// 备注：全局接口初始化
 
 static void bcachefs_exit(void)
 {
@@ -1740,6 +1809,8 @@ static int __init bcachefs_init(void)
 
 	kobject_init(&bcachefs_kobj, &bcachefs_ktype);
 
+	// 备注：vfs_init: 注册文件系统类型
+	// 备注：chardev_init: 注册字符设备
 	if (kobject_add(&bcachefs_kobj, fs_kobj, "bcachefs") ||
 	    bch2_lock_graph_init() ||
 	    bch2_btree_key_cache_init() ||

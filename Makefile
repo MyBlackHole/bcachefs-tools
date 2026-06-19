@@ -165,6 +165,14 @@ CFLAGS+=-DBCACHEFS_FUSE
 NO_PKGCONFIG_TARGETS := install_dkms uninstall clean dkms/dkms.conf generate_version TAGS tags
 ifneq ($(filter-out $(NO_PKGCONFIG_TARGETS),$(or $(MAKECMDGOALS),all)),)
 
+ifdef CONFIG_BCACHEFS_TESTS
+	CFLAGS+=-DCONFIG_BCACHEFS_TESTS
+endif
+
+ifdef CONFIG_BCACHE_DEBUG
+	CFLAGS+=-DCONFIG_BCACHE_DEBUG
+endif
+
 PKGCONFIG_CFLAGS:=$(shell $(PKG_CONFIG) --cflags $(PKGCONFIG_LIBS))
 ifeq (,$(PKGCONFIG_CFLAGS))
     $(error pkg-config error, command: $(PKG_CONFIG) --cflags $(PKGCONFIG_LIBS))
@@ -227,7 +235,7 @@ TAGS:
 tags:
 	ctags -R .
 
-SRCS:=$(sort $(shell find . -type f ! -path '*/.*/*' ! -path './vendor/*' ! -path './debian/*' ! -path './target/*' -iname '*.c'))
+SRCS:=$(sort $(shell find . -type f ! -path '*/.*/*' ! -path './vendor/*' ! -path './debian/*' ! -path './target/*' ! -path './tests/*' -iname '*.c'))
 # KUnit test — kernel-only, no userspace equivalent for <kunit/test.h>
 SRCS:=$(filter-out %/mean_and_variance_test.c, $(SRCS))
 DEPS:=$(SRCS:.c=.d)

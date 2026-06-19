@@ -211,13 +211,44 @@ static inline void zlib_set_workspace(z_stream *strm, void *workspace)
 #endif
 }
 
+// 备注：buf_uncompress - 解压数据到目标缓冲区
+// 备注：@c:		文件系统实例
+// 备注：@dst:		目标缓冲区（解压后数据）
+// 备注：@src:		源缓冲区（压缩数据）
+// 备注：@crc:		CRC 结构，包含压缩类型和大小信息
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是 bcachefs 数据解压的核心函数，支持多种压缩算法：
+// 备注：- LZ4：快速解压，适合实时场景
+// 备注：- Gzip：高压缩比，CPU 开销较大
+// 备注：- Zstd：平衡压缩比和速度
+// 备注：
+// 备注：【工作流程】
+// 备注：
+// 备注：1. 根据 CRC 中的 compression_type 确定解压算法
+// 备注：2. 获取对应算法的工作区（workspace）
+// 备注：3. 调用具体算法的解压函数
+// 备注：4. 可选：验证解压结果（调试模式）
+// 备注：
+// 备注：【错误处理】
+// 备注：
+// 备注：- 如压缩类型未在超级块中标记，尝试自动修复
+// 备注：- 如工作区未初始化，返回错误
+// 备注：- 如解压失败，返回对应错误码
 static int buf_uncompress(struct bch_fs *c,
 			  void *dst, void *src,
 			  struct bch_extent_crc_unpacked crc)
 {
+	// 备注：将压缩类型转换为选项类型
 	enum bch_compression_opts opt = bch2_compression_type_to_opt(crc.compression_type);
+
+	// 备注：获取对应压缩算法的工作区内存池
 	mempool_t *workspace_pool = &c->compress.workspace[opt];
+
+	// 备注：检查工作区是否已初始化
 	if (unlikely(!mempool_initialized(workspace_pool))) {
+		// 备注：尝试自动修复：标记压缩类型到超级块
 		if (ret_fsck_err(c, compression_type_not_marked_in_sb,
 			     "compression type %s set but not marked in superblock",
 			     __bch2_compression_types[crc.compression_type]))
@@ -226,6 +257,7 @@ static int buf_uncompress(struct bch_fs *c,
 			return bch_err_throw(c, compression_workspace_not_initialized);
 	}
 
+	// 备注：计算压缩和未压缩数据的大小（转换为字节）
 	size_t src_len = crc.compressed_size << 9;
 	size_t dst_len = crc.uncompressed_size << 9;
 

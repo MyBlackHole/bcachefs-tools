@@ -1,3 +1,16 @@
+// ============================================
+// 备注：libbcachefs C 包装 — 选项解析
+//
+// 备注：实现 libbcachefs.h 中声明的 libbcachefs 库 C API：
+// 备注：  bch2_opt_strs_free() — 释放选项字符串数组
+// 备注：  bch2_parse_opts() — 将字符串选项解析为 bch_opts
+//
+// 备注：选项解析流程：
+// 备注：  1. 遍历所有已知选项（bch2_opt_table）
+// 备注：  2. 对每个已设置的选项调用 bch2_opt_parse()
+// 备注：  3. 将解析后的 u64 值设置到 bch_opts 中
+// 备注：  4. 忽略需要打开文件系统的选项（BCH_ERR_option_needs_open_fs）
+// ============================================
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>

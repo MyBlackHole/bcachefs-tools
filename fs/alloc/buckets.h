@@ -254,6 +254,7 @@ static inline u64 bch2_dev_buckets_reserved(struct bch_dev *ca, enum bch_waterma
 	return reserved;
 }
 
+// 备注：计算设备上可用的bucket数量 
 static inline u64 __dev_buckets_free(struct bch_dev *ca,
 				     struct bch_dev_usage usage,
 				     enum bch_watermark watermark)

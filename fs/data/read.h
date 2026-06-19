@@ -27,6 +27,7 @@ struct bch_read_err_report {
 struct bch_read_bio {
 	struct bch_fs		*c;
 	struct bch_dev		*ca;	/* stashed at submit; see bch_write_bio */
+	// 备注：读取开始时间 
 	u64			start_time;
 	u64			submit_time;
 
@@ -77,6 +78,7 @@ struct bch_read_bio {
 	/*
 	 * pos we read from - different from data_pos for indirect extents:
 	 */
+	// 备注：我们读取的 pos - 与间接范围的 data_pos 不同： 
 	u32			subvol;
 	struct bpos		read_pos;
 

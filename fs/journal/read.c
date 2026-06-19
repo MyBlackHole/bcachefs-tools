@@ -151,9 +151,13 @@ static void journal_replay_maybe_drop_overwrites(struct bch_fs *c, struct jset *
 }
 
 struct journal_list {
+	// 备注：闭包
 	struct closure		cl;
+	// 备注：最后一个序列号(最大的序列号)
 	u64			last_seq;
+	// 备注：锁
 	struct mutex		lock;
+	// 备注：执行状态
 	int			ret;
 	bool			full_read;
 };
@@ -201,6 +205,7 @@ static int journal_entry_add(struct bch_fs *c, struct bch_dev *ca,
 	}
 
 	/* Drop entries we don't need anymore */
+	// 备注：删除我们不再需要的条目
 	if (last_seq > jlist->last_seq && !c->opts.read_entire_journal) {
 		genradix_for_each_from(&c->journal_entries, iter, _i,
 				       journal_entry_radix_idx(c, jlist->last_seq)) {
@@ -212,10 +217,12 @@ static int journal_entry_add(struct bch_fs *c, struct bch_dev *ca,
 			if (le64_to_cpu(i->j.seq) >= last_seq)
 				break;
 
+			// 备注：释放 journal_replay
 			journal_replay_free(c, i, false);
 		}
 	}
 
+	// 备注：记录最大的序列号
 	jlist->last_seq = max(jlist->last_seq, last_seq);
 
 	journal_replay_maybe_drop_overwrites(c, j);
@@ -230,6 +237,8 @@ static int journal_entry_add(struct bch_fs *c, struct bch_dev *ca,
 	 * Duplicate journal entries? If so we want the one that didn't have a
 	 * checksum error:
 	 */
+	// 备注：日记条目重复？
+	// 备注：如果是这样，我们想要一个没有校验和错误的：
 	dup = *_i;
 	if (dup) {
 		WARN(seq != le64_to_cpu(dup->j.seq),
@@ -318,6 +327,7 @@ static int journal_read_buf_realloc(struct bch_fs *c, struct journal_read_buf *b
 	return 0;
 }
 
+// 备注：读取指定桶日志
 static int journal_read_bucket(struct bch_dev *ca,
 			       struct journal_read_buf *buf,
 			       struct journal_list *jlist,
@@ -326,6 +336,7 @@ static int journal_read_bucket(struct bch_dev *ca,
 	struct bch_fs *c = ca->fs;
 	struct journal_device *ja = &ca->journal;
 	struct jset *j = buf->data;
+	// 备注：获取当前桶的起始结束扇区位置
 	u64 offset = bucket_to_sector(ca, ja->buckets[bucket]),
 	    end = offset + ca->mi.bucket_size;
 	bool saw_bad = false, csum_good;
@@ -359,6 +370,7 @@ static int journal_read_bucket(struct bch_dev *ca,
 			sectors = vstruct_sectors(j, c->block_bits);
 			break;
 		case JOURNAL_ENTRY_NONE:
+			// 备注：跳过无效的日志
 			if (!saw_bad)
 				return 0;
 			/*
@@ -387,6 +399,7 @@ static int journal_read_bucket(struct bch_dev *ca,
 		if (le64_to_cpu(j->seq) < ja->bucket_seq[bucket])
 			return 0;
 
+		// 备注：更新当前桶的 seq
 		ja->bucket_seq[bucket] = le64_to_cpu(j->seq);
 
 		struct bch_csum csum;
@@ -408,6 +421,7 @@ static int journal_read_bucket(struct bch_dev *ca,
 		bch2_fs_fatal_err_on(ret, c, "decrypting journal entry: %s", bch2_err_str(ret));
 
 		scoped_guard(mutex, &jlist->lock)
+			// 备注：加入日志列表
 			ret = journal_entry_add(c, ca, (struct journal_ptr) {
 						.csum_good	= csum_good,
 						.csum		= csum,
@@ -721,6 +735,7 @@ static CLOSURE_CALLBACK(bch2_journal_read_device)
 	if (!ja->nr)
 		goto out;
 
+	// 备注：分配读取日志的缓冲区
 	ret = journal_read_buf_realloc(c, &buf, bucket_bytes(ca));
 	if (ret)
 		goto err;
@@ -839,6 +854,7 @@ static CLOSURE_CALLBACK(bch2_journal_read_device)
 		goto done;
 	}
 full_read:
+	// 备注：读取每个桶日志
 	for (i = 0; i < ja->nr; i++) {
 		ret = journal_read_bucket(ca, &buf, jlist, i);
 		if (ret)
@@ -1149,11 +1165,14 @@ int bch2_journal_read(struct bch_fs *c, struct journal_start_info *info)
 
 	memset(info, 0, sizeof(*info));
 
+	// 备注：闭包初始化
 	closure_init_stack(&jlist.cl);
 	mutex_init(&jlist.lock);
 	jlist.last_seq = 0;
 	jlist.ret = 0;
 
+	// 备注：遍历所有设备
+	// 备注：读取日志
 	for_each_member_device(c, ca) {
 		if (!c->opts.read_entire_journal &&
 		    !c->opts.fsck &&
@@ -1172,9 +1191,11 @@ int bch2_journal_read(struct bch_fs *c, struct journal_start_info *info)
 			set_bit(JOURNAL_degraded, &c->journal.flags);
 	}
 
+	// 备注：等待所有设备读取日志完成
 	closure_sync_unbounded(&jlist.cl);
 
 	if (jlist.ret)
+		// 备注：读取日志失败, 存在错误
 		return jlist.ret;
 
 	/*
@@ -1193,16 +1214,22 @@ int bch2_journal_read(struct bch_fs *c, struct journal_start_info *info)
 	 * Everything between replay_end+1 and cur_seq-1 (noflush entries and
 	 * torn flush writes) will be blacklisted by the caller.
 	 */
+	// 备注：查找最近的刷新条目，
+	// 备注：并忽略较新的非刷新条目 - 这些条目将被列入黑名单：
 	genradix_for_each_reverse(&c->journal_entries, radix_iter, _i) {
 		i = *_i;
 
 		if (journal_replay_ignore(i))
+			// 备注：忽略黑名单与未修改条目
 			continue;
 
 		if (!info->cur_seq)
+			// 备注：找到第一个条目
 			info->cur_seq = le64_to_cpu(i->j.seq) + 1;
 
 		if (JSET_NO_FLUSH(&i->j)) {
+			// 备注：不需要刷新
+			// 备注：跳过
 			i->ignore_blacklisted = true;
 			continue;
 		}
@@ -1232,11 +1259,14 @@ int bch2_journal_read(struct bch_fs *c, struct journal_start_info *info)
 	}
 
 	if (!info->cur_seq) {
+		// 备注：日志已读取，但未找到条目
 		bch_info(c, "journal read done, but no entries found");
 		return 0;
 	}
 
 	if (!info->replay_end) {
+		// 备注：日志读取完成，
+		// 备注：但在删除非刷新后未找到任何条目
 		fsck_err(c, dirty_but_no_journal_entries_post_drop_nonflushes,
 			 "journal read done, but no entries found after dropping non-flushes");
 		return 0;
@@ -1273,6 +1303,7 @@ int bch2_journal_read(struct bch_fs *c, struct journal_start_info *info)
 		bch_info(c, "%s", buf.buf);
 	}
 
+	// 备注：删除黑名单条目和早于last_seq的条目
 	genradix_for_each(&c->journal_entries, radix_iter, _i) {
 		i = *_i;
 

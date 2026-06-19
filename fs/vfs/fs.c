@@ -51,6 +51,7 @@
 
 static struct kmem_cache *bch2_inode_cache;
 
+// 备注：vfs 层 inode 实现初始化
 static void bch2_vfs_inode_init(struct btree_trans *, subvol_inum,
 				struct bch_inode_info *,
 				struct bch_inode_unpacked *,
@@ -468,6 +469,7 @@ static void bch2_vfs_writeback_fn(struct work_struct *work)
 	iput(&inode->v);
 }
 
+// 备注：创建一个新的 inode
 static struct bch_inode_info *__bch2_new_inode(struct bch_fs *c, gfp_t gfp)
 {
 	struct bch_inode_info *inode = alloc_inode_sb(c->vfs_sb, bch2_inode_cache, gfp);
@@ -480,10 +482,12 @@ static struct bch_inode_info *__bch2_new_inode(struct bch_fs *c, gfp_t gfp)
 		return NULL;
 	}
 
+	// 备注：初始化系统架构的 inode
 	inode_init_once(&inode->v);
 	spin_lock_init(&inode->ei_reserved_lock);
 	inode->ei_reserved_start	= 0;
 	inode->ei_reserved_end		= 0;
+	// 备注：初始化 bcachefs 的 inode
 	mutex_init(&inode->ei_update_lock);
 	two_state_lock_init(&inode->ei_pagecache_lock);
 	inode->ei_inodes_idx = idx;
@@ -601,6 +605,7 @@ __bch2_create(struct mnt_idmap *idmap,
 			return ERR_PTR(ret);
 	}
 
+	// 备注：创建 inode
 	inode = __bch2_new_inode(c, GFP_NOFS);
 	if (unlikely(!inode)) {
 		posix_acl_release(default_acl);
@@ -618,6 +623,7 @@ __bch2_create(struct mnt_idmap *idmap,
 	 */
 	CLASS(btree_trans, trans)(c);
 retry:
+	// 备注：开始事务
 	bch2_trans_begin(trans);
 
 	ret   = bch2_create_trans(trans,
@@ -1613,6 +1619,7 @@ err:
 	return bch2_err_class(ret);
 }
 
+// 备注：文件操作集
 static const struct file_operations bch_file_operations = {
 	.open		= bch2_open,
 	.llseek		= bch2_llseek,
@@ -1635,6 +1642,7 @@ static const struct file_operations bch_file_operations = {
 	.remap_file_range = bch2_remap_file_range,
 };
 
+// 备注：文件 inode 操作集
 static const struct inode_operations bch_file_inode_operations = {
 	.getattr	= bch2_getattr,
 	.setattr	= bch2_setattr,
@@ -1646,6 +1654,7 @@ static const struct inode_operations bch_file_inode_operations = {
 	.fileattr_set	= bch2_fileattr_set,
 };
 
+// 备注：目录 inode 操作集
 static const struct inode_operations bch_dir_inode_operations = {
 	.lookup		= bch2_lookup,
 	.create		= bch2_create,
@@ -1666,6 +1675,7 @@ static const struct inode_operations bch_dir_inode_operations = {
 	.fileattr_set	= bch2_fileattr_set,
 };
 
+// 备注：目录操作集
 static const struct file_operations bch_dir_file_operations = {
 	.llseek		= bch2_dir_llseek,
 	.read		= generic_read_dir,
@@ -1677,6 +1687,7 @@ static const struct file_operations bch_dir_file_operations = {
 #endif
 };
 
+// 备注：软连 inode 操作集
 static const struct inode_operations bch_symlink_inode_operations = {
 	.get_link	= page_get_link,
 	.getattr	= bch2_getattr,
@@ -1688,6 +1699,7 @@ static const struct inode_operations bch_symlink_inode_operations = {
 	.fileattr_set	= bch2_fileattr_set,
 };
 
+// 备注：特殊 inode 操作集
 static const struct inode_operations bch_special_inode_operations = {
 	.getattr	= bch2_getattr,
 	.setattr	= bch2_setattr,
@@ -1698,6 +1710,7 @@ static const struct inode_operations bch_special_inode_operations = {
 	.fileattr_set	= bch2_fileattr_set,
 };
 
+// 备注：地址空间操作集
 static const struct address_space_operations bch_address_space_operations = {
 	.read_folio	= bch2_read_folio,
 	.writepages	= bch2_writepages,
@@ -1946,6 +1959,7 @@ static const struct export_operations bch_export_ops = {
 	.get_name	= bch2_get_name,
 };
 
+// 备注：vfs 层 inode 实现初始化
 static void bch2_vfs_inode_init(struct btree_trans *trans,
 				subvol_inum inum,
 				struct bch_inode_info *inode,
@@ -2238,12 +2252,14 @@ static int bch2_sync_fs(struct super_block *sb, int wait)
 	return bch2_err_class(ret);
 }
 
+// 备注：通过 path 到 bch_fs
 static struct bch_fs *bch2_path_to_fs(const char *path)
 {
 	struct bch_fs *c;
 	dev_t dev;
 	int ret;
 
+	// 备注：通过 path 找到设备号
 	ret = lookup_bdev(path, &dev);
 	if (ret)
 		return ERR_PTR(ret);
@@ -2384,18 +2400,24 @@ static int bch2_fs_get_tree(struct fs_context *fc)
 	if (!fc->source || strlen(fc->source) == 0)
 		return -EINVAL;
 
+	// 备注：获取设备数量与切分字符串
 	try(bch2_split_devs(fc->source, &devs));
 
+	// 备注：遍历所有设备路径
+	// 备注：devs_to_fs 都是空的?
 	darray_for_each(devs, i) {
 		ret = darray_push(&devs_to_fs, bch2_path_to_fs(*i));
 		if (ret)
 			goto err;
 	}
 
+	// 备注：检查设备是否已经打开，
+	// 备注：被使用中了
 	sb = sget(fc->fs_type, bch2_test_super, bch2_noset_super, fc->sb_flags|SB_NOSEC, &devs_to_fs);
 	if (!IS_ERR(sb))
 		goto got_sb;
 
+	// 备注：打开文件系统
 	c = bch2_fs_open(&devs, &opts);
 	ret = PTR_ERR_OR_ZERO(c);
 	if (ret)
@@ -2414,6 +2436,7 @@ static int bch2_fs_get_tree(struct fs_context *fc)
 	bch2_opts_apply(&c->opts, opts);
 	set_mount_opts(c, &opts);
 
+	// 备注：文件系统启动
 	ret = bch2_fs_start(c);
 	if (ret)
 		goto err_stop_fs;
@@ -2716,6 +2739,7 @@ int bch2_fs_vfs_init_rw(struct bch_fs *c)
 	return 0;
 }
 
+// 备注：bcachefs 文件系统定义
 static struct file_system_type bcache_fs_type = {
 	.owner			= THIS_MODULE,
 	.name			= "bcachefs",
@@ -2741,6 +2765,7 @@ int __init bch2_vfs_init(void)
 	if (!bch2_inode_cache)
 		goto err;
 
+	// 备注：注册文件系统到内核全局文件系统类型列表
 	ret = register_filesystem(&bcache_fs_type);
 	if (ret)
 		goto err;

@@ -26,12 +26,14 @@ struct {								\
 #define darray_for_each_from(_d, _i, _start)					\
 	for (typeof(&(_d).data[0]) _i = _start; _i < (_d).data + (_d).nr; _i++)
 
+// 备注：遍历数组 
 #define darray_for_each(_d, _i)						\
 	darray_for_each_from(_d, _i, (_d).data)
 
 #define darray_for_each_max(_d, _i, _nr)					\
 	for (typeof(&(_d).data[0]) _i = (_d).data; _i < (_d).data + min(_nr, (_d).nr); _i++)
 
+// 备注：反向遍历数组 
 #define darray_for_each_reverse(_d, _i)					\
 	for (typeof(&(_d).data[0]) _i = (_d).data + (_d).nr - 1; _i >= (_d).data && (_d).nr; --_i)
 
@@ -140,8 +142,10 @@ int __bch2_darray_resize_noprof(darray_char *, size_t, size_t, gfp_t, bool, bool
 	_ret;								\
 })
 
+// 备注：添加元素到数组 
 #define darray_push(_d, _item)	darray_push_gfp(_d, _item, GFP_KERNEL)
 
+// 备注：从数组移除元素 
 #define darray_pop(_d)		((_d)->data[--(_d)->nr])
 
 #define darray_first(_d)	((_d).data[0])

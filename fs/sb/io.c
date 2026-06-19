@@ -337,6 +337,7 @@ int bch2_sb_realloc(struct bch_sb_handle *sb, unsigned u64s)
 	if (sb->bdev)
 		new_bytes = max_t(size_t, new_bytes, bdev_logical_block_size(sb->bdev));
 
+	// 备注：向上取整(2的次幂)
 	new_buffer_size = roundup_pow_of_two(new_bytes);
 
 	if (sb->sb && sb->buffer_size >= new_buffer_size)
@@ -380,6 +381,7 @@ int bch2_sb_realloc(struct bch_sb_handle *sb, unsigned u64s)
 		sb->bio = bio;
 	}
 
+	// 备注：设置 buf 大小
 	sb->buffer_size = new_buffer_size;
 
 	return 0;
@@ -486,6 +488,7 @@ static int validate_sb_layout(struct bch_sb_layout *layout, struct printbuf *out
 	return 0;
 }
 
+// 备注：兼容检查
 static int bch2_sb_compatible(struct bch_sb *sb, struct printbuf *out)
 {
 	u16 version		= le16_to_cpu(sb->version);
@@ -736,6 +739,7 @@ static void bch2_sb_update(struct bch_fs *c)
 	bch2_sb_members_to_cpu(c);
 }
 
+// 备注：移动 src 内容到 bch_sb_handle 的 sb
 static int __copy_super(struct bch_sb_handle *dst_handle, struct bch_sb *src)
 {
 	struct bch_sb_field *src_f, *dst_f;
@@ -811,13 +815,17 @@ int bch2_sb_from_fs(struct bch_fs *c, struct bch_dev *ca)
 
 /* read superblock: */
 
+// 备注：读取超级块
 static int read_one_super(struct bch_sb_handle *sb, u64 offset, struct printbuf *err)
 {
 	while (true) {
+		// 备注：设置读取扇区操作
 		bio_reset(sb->bio, sb->bdev, REQ_OP_READ|REQ_SYNC|REQ_META);
 		sb->bio->bi_iter.bi_sector = offset;
+		// 备注：映射内存地址到 bio
 		bch2_bio_map(sb->bio, sb->sb, sb->buffer_size);
 
+		// 备注：向块驱动层请求数据页
 		int ret = submit_bio_wait(sb->bio);
 		if (ret) {
 			prt_printf(err, "IO error: %i", ret);
@@ -832,6 +840,7 @@ static int read_one_super(struct bch_sb_handle *sb, u64 offset, struct printbuf 
 			return -BCH_ERR_invalid_sb_magic;
 		}
 
+		// 备注：校验版本之类的
 		try(bch2_sb_compatible(sb->sb, err));
 
 		size_t bytes = vstruct_bytes(sb->sb);
@@ -984,6 +993,7 @@ static int read_super_and_backups(struct bch_sb_handle *sb,
 	if (!opt_get(*opts, nochanges))
 		sb->mode |= BLK_OPEN_WRITE;
 
+	// 备注：打开获取对应路径的块设备结构
 	sb->s_bdev_file = bdev_file_open_by_path(path, sb->mode, sb->holder, &bch2_sb_handle_bdev_ops);
 	if (IS_ERR(sb->s_bdev_file) &&
 	    PTR_ERR(sb->s_bdev_file) == -EACCES &&
@@ -1000,6 +1010,7 @@ static int read_super_and_backups(struct bch_sb_handle *sb,
 
 	sb->bdev = file_bdev(sb->s_bdev_file);
 
+	// 备注：从新分配 buf size
 	try(bch2_sb_realloc(sb, 0));
 
 	if (bch2_fs_init_fault("read_super"))
@@ -1013,6 +1024,7 @@ static int read_super_and_backups(struct bch_sb_handle *sb,
 	 */
 	if (opt_defined(*opts, sb)) {
 		sb_offset = opt_get(*opts, sb);
+		// 备注：真正的读取超级块逻辑
 		try(read_one_super(sb, sb_offset, err));
 	} else {
 		struct bch_sb_layout layout;
@@ -1071,20 +1083,51 @@ static int __bch2_read_super(struct bch_sb_handle *sb,
 	}
 }
 
+// 备注：bch2_read_super - 从指定路径读取超级块
+// 备注：@path:	设备路径
+// 备注：@opts:		bcachefs 选项
+// 备注：@sb:			超级块句柄（输出）
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是读取 bcachefs 超级块的入口函数，支持：
+// 备注：- 从块设备读取超级块
+// 备注：- 验证超级块版本和兼容性
+// 备注：- 尝试从备份超级块恢复（如主超级块损坏）
+// 备注：- 详细的错误报告
+// 备注：
+// 备注：【超级块位置】
+// 备注：
+// 备注：bcachefs 在设备上存储多个超级块副本：
+// 备注：- 主超级块：位于设备起始位置（sb_offset）
+// 备注：- 备份超级块：分布在设备不同位置
+// 备注：- 如主超级块损坏，自动尝试读取备份
+// 备注：
+// 备注：【读取流程】
+// 备注：
+// 备注：1. 调用 __bch2_read_super 执行实际读取
+// 备注：2. 验证超级块魔数和版本
+// 备注：3. 检查特征位兼容性
+// 备注：4. 如失败，尝试从备份读取
+// 备注：5. 输出详细的错误信息或成功通知
 int bch2_read_super(const char *path, struct bch_opts *opts,
 		    struct bch_sb_handle *sb)
 {
 	CLASS(printbuf, err)();
+
+	// 备注：调用内部函数执行实际读取和验证
 	int ret = __bch2_read_super(sb, path, opts, &err);
 	if (ret)
 		bch2_free_super(sb);
 
+	// 备注：输出详细的错误信息
 	if (ret && err.pos)
 		bch2_print_opts(opts, KERN_ERR "bcachefs (%s): error reading superblock: %s\n%s",
 				path, bch2_err_str(ret), err.buf);
 	else if (ret)
 		bch2_print_opts(opts, KERN_ERR "bcachefs (%s): error reading superblock: %s",
 				path, bch2_err_str(ret));
+	// 备注：成功但从备份读取时输出警告
 	else if (err.pos) {
 		prt_printf(&err, "successful read from backup\n");
 		bch2_print_opts(opts, KERN_NOTICE "bcachefs (%s): %s", path, err.buf);
@@ -1158,6 +1201,7 @@ static void write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
 	bio->bi_iter.bi_sector	= le64_to_cpu(sb->offset);
 	bio->bi_end_io		= write_super_endio;
 	bio->bi_private		= ca;
+	// 备注：设置需要写入的超级块内容
 	bch2_bio_map(bio, sb,
 		     roundup((size_t) vstruct_bytes(sb),
 			     bdev_logical_block_size(ca->disk_sb.bdev)));
@@ -1165,6 +1209,7 @@ static void write_one_super(struct bch_fs *c, struct bch_dev *ca, unsigned idx)
 	this_cpu_add(ca->io_done->sectors[WRITE][BCH_DATA_sb],
 		     bio_sectors(bio));
 
+	// 备注：提交写入超级块的 bio
 	closure_bio_submit(bio, &c->sb_write);
 }
 
@@ -1433,6 +1478,7 @@ void __bch2_check_set_feature(struct bch_fs *c, unsigned feat)
 }
 
 /* Downgrade if superblock is at a higher version than currently supported: */
+// 备注：如果超级块的版本高于当前支持的版本，则降级：
 bool bch2_check_version_downgrade(struct bch_fs *c)
 {
 	bool ret = bcachefs_metadata_version_current < c->sb.version;

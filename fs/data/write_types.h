@@ -42,6 +42,7 @@ enum bch_write_flags {
 #undef x
 };
 
+// 备注：文件系统写表达结构 
 struct bch_write_bio {
 	struct_group(wbio,
 	struct bch_fs		*c;
@@ -75,13 +76,16 @@ struct bch_write_bio {
 struct bch_write_op {
 	struct closure		cl;
 	struct bch_fs		*c;
+	// 备注：io 结束回调 
 	void			(*end_io)(struct bch_write_op *);
+	// 备注：开始时间 
 	u64			start_time;
 
 #ifdef CONFIG_BCACHEFS_ASYNC_OBJECT_LISTS
 	unsigned		list_idx;
 #endif
 
+	// 备注：扇区 
 	unsigned		written; /* sectors */
 	u16			flags;
 	s16			error; /* dio write path expects it to hold -ERESTARTSYS... */
@@ -118,16 +122,20 @@ struct bch_write_op {
 	u64			new_i_size;
 	s64			i_sectors_delta;
 
+	// 备注：插入 key 列表 
 	struct keylist		insert_keys;
+	// 备注：内联 key 
 	u64			inline_keys[BKEY_EXTENT_U64s_MAX * 2];
 
 	/*
 	 * Bitmask of devices that have had nocow writes issued to them since
 	 * last flush:
 	 */
+	// 备注：自上次刷新以来已向其发出 nocow 写入的设备的位掩码： 
 	struct bch_devs_mask	*devs_need_flush;
 
 	/* Must be last: */
+	// 备注：必须是最后一个 
 	struct bch_write_bio	wbio;
 };
 

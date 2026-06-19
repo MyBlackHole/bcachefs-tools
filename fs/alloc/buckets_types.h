@@ -46,13 +46,17 @@ struct bucket {
 
 struct bucket_gens {
 	struct rcu_head		rcu;
+	// 备注：第一个桶
 	u16			first_bucket;
+	// 备注：桶数量
 	size_t			nbuckets;
+	// 备注：bit 标志位(标记桶)
 	size_t			nbuckets_minus_first;
 	u8			b[] __counted_by(nbuckets);
 };
 
 /* Only info on bucket countns: */
+// 备注：提供桶数量信息
 struct bch_dev_usage {
 	u64			buckets[BCH_DATA_NR];
 };
@@ -60,6 +64,7 @@ struct bch_dev_usage {
 struct bch_dev_usage_full {
 	struct bch_dev_usage_type {
 		u64		buckets;
+		// 备注：压缩后的扇区大小
 		u64		sectors; /* _compressed_ sectors: */
 		/*
 		 * XXX
@@ -87,6 +92,9 @@ struct bch_fs_usage_short {
 /*
  * A reservation for space on disk:
  */
+// 备注：A reservation for space on disk:
+// 备注：
+// 备注：磁盘空间预留
 struct disk_reservation {
 	u64			sectors;
 	u32			gen;

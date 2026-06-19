@@ -776,6 +776,46 @@ static int bch2_journal_write_checksum(struct journal *j, struct journal_buf *w)
 	return 0;
 }
 
+// 备注：bch2_journal_write - 执行日志写入操作
+// 备注：@cl: closure
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是日志系统的核心写入函数，负责将日志条目（journal entry）持久化到磁盘。
+// 备注：日志是保证bcachefs崩溃一致性的关键机制。
+// 备注：
+// 备注：【日志写入流程】
+// 备注：
+// 备注：1. 准备工作：
+// 备注：   - 检查日志缓冲区状态
+// 备注：   - 选择写入策略（是否需要flush/barrier）
+// 备注：   - 重新分配缓冲区（如需要）
+// 备注：
+// 备注：2. 空间分配：
+// 备注：   - 在日志设备上分配空间
+// 备注：   - 创建extent键值（记录设备位置）
+// 备注：   - 处理多副本写入
+// 备注：
+// 备注：3. 数据准备：
+// 备注：   - 添加keys到日志条目
+// 备注：   - 计算校验和
+// 备注：   - 设置序列号
+// 备注：
+// 备注：4. 提交写入：
+// 备注：   - 标记副本信息
+// 备注：   - 调用journal_write_submit
+// 备注：   - 等待写入完成（closure机制）
+// 备注：
+// 备注：【崩溃一致性保证】
+// 备注：
+// 备注：- 日志条目按序列号顺序写入
+// 备注：- 使用FUA（Force Unit Access）确保数据落盘
+// 备注：- 写入完成后才更新last_seq_ondisk
+// 备注：- 恢复时按序列号顺序重放日志
+// 备注：
+// 备注：【参数】
+// 备注：
+// 备注：@cl: closure结构，包含journal_buf指针
 CLOSURE_CALLBACK(bch2_journal_write)
 {
 	closure_type(w, struct journal_buf, io);
@@ -784,12 +824,15 @@ CLOSURE_CALLBACK(bch2_journal_write)
 	unsigned nr_rw_members = dev_mask_nr(&c->allocator.rw_devs[BCH_DATA_free]);
 	int ret;
 
+	// 备注：前置条件检查
 	BUG_ON(!w->write_started);
 	BUG_ON(w->write_allocated);
 	BUG_ON(w->write_done);
 
+	// 备注：使用PF_MEMALLOC_NOFS避免在持有锁时触发内存回收
 	guard(memalloc_flags)(PF_MEMALLOC_NOFS);
 
+	// 备注：记录写入开始时间，用于性能统计
 	j->write_start_time = local_clock();
 
 	scoped_guard(mutex, &j->buf_lock) {

@@ -29,6 +29,51 @@ static inline int is_subdir_for_nlink(struct bch_inode_unpacked *inode)
 	return S_ISDIR(inode->bi_mode) && !inode->bi_subvol;
 }
 
+// 备注：bch2_create_trans - 在目录中创建新文件或子卷快照
+// 备注：@trans:	btree事务
+// 备注：@dir:		父目录的inode和子卷
+// 备注：@dir_u:		父目录inode的未打包表示
+// 备注：@new_inode:		新inode的未打包表示（输出）
+// 备注：@name:		新文件名
+// 备注：@uid:		文件所有者UID
+// 备注：@gid:		文件所属组GID
+// 备注：@mode:		文件模式（权限+类型）
+// 备注：@rdev:		设备号（用于设备文件）
+// 备注：@default_acl:	默认ACL（可为NULL）
+// 备注：@acl:		访问ACL（可为NULL）
+// 备注：@snapshot_src:	快照源（用于创建快照）
+// 备注：@flags:		创建标志
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是bcachefs文件创建的核心函数，支持多种创建模式：
+// 备注：1. 普通文件创建（文件、目录、设备节点等）
+// 备注：2. 临时文件（O_TMPFILE）
+// 备注：3. 子卷创建（BCH_CREATE_SUBVOL）
+// 备注：4. 快照创建（BCH_CREATE_SNAPSHOT）
+// 备注：
+// 备注：【创建流程】
+// 备注：
+// 备注：1. 获取父目录的快照ID（用于COW隔离）
+// 备注：2. 锁定父目录inode
+// 备注：3. 根据标志选择创建路径：
+// 备注：a) 普通创建：分配新inode号，初始化inode元数据
+// 备注：b) 快照创建：查找源子卷的根inode，复制到新快照
+// 备注：4. 如创建子卷，调用bch2_subvolume_create()创建子卷
+// 备注：5. 在父目录中创建目录项（dirent）
+// 备注：6. 设置ACL（如提供）
+// 备注：7. 更新父目录时间戳
+// 备注：
+// 备注：【权限检查】
+// 备注：
+// 备注：- 父目录必须有写权限
+// 备注：- 创建快照需要CAP_FOWNER能力或拥有子卷
+// 备注：- sticky位检查（如父目录设置了sticky位）
+// 备注：
+// 备注：【事务一致性】
+// 备注：
+// 备注：所有操作（inode创建、dirent添加、ACL设置）在同一个事务中完成，
+// 备注：确保原子性。如任何步骤失败，整个创建操作回滚。
 int bch2_create_trans(struct btree_trans *trans,
 		      subvol_inum dir,
 		      struct bch_inode_unpacked *dir_u,
@@ -62,11 +107,14 @@ int bch2_create_trans(struct btree_trans *trans,
 
 	if (!(flags & BCH_CREATE_SNAPSHOT)) {
 		/* Normal create path - allocate a new inode: */
+		// 备注：普通创建路径 - 分配一个新的 inode:
 		bch2_inode_init_late(c, new_inode, now, uid, gid, mode, rdev, dir_u);
 
+		// 备注：临时文件标记为未链接状态
 		if (flags & BCH_CREATE_TMPFILE)
 			new_inode->bi_flags |= BCH_INODE_unlinked;
 
+		// 备注：在btree中分配新inode号并写入inode数据
 		try(bch2_inode_create(trans, &inode_iter, new_inode, dir_snapshot,
 				      inode_opt_get(c, dir_u, inodes_32bit)));
 
@@ -77,7 +125,8 @@ int bch2_create_trans(struct btree_trans *trans,
 		 * we do have to lookup the root inode of the subvolume we're
 		 * snapshotting and update it (in the new snapshot):
 		 */
-
+		// 备注：创建快照 - 不分配新inode，但需要查找
+		// 备注：要快照的子卷的根inode并在新快照中更新它
 		if (!snapshot_src.inum) {
 			/* Inode wasn't specified, just snapshot: */
 			struct bch_subvolume s;
@@ -174,6 +223,41 @@ int bch2_create_trans(struct btree_trans *trans,
 	return 0;
 }
 
+// 备注：bch2_link_trans - 创建硬链接
+// 备注：@trans:	btree事务
+// 备注：@dir:		目标目录的inode和子卷
+// 备注：@dir_u:		目标目录inode的未打包表示
+// 备注：@inum:		源文件的inode和子卷
+// 备注：@inode_u:		源文件inode的未打包表示
+// 备注：@name:		链接名
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：创建指向现有inode的新硬链接。硬链接使多个目录项指向同一个inode，
+// 备注：共享相同的数据块和元数据（除了目录项本身）。
+// 备注：
+// 备注：【限制条件】
+// 备注：
+// 备注：- 源文件和目标目录必须在同一子卷（-EXDEV）
+// 备注：- 不能跨文件系统链接
+// 备注：- 不能链接目录（通常限制，防止循环）
+// 备注：- 链接数和属性继承可能有限制
+// 备注：
+// 备注：【执行流程】
+// 备注：
+// 备注：1. 检查源文件和目标目录是否在同一子卷
+// 备注：2. 读取并锁定源inode，增加链接计数
+// 备注：3. 读取并锁定目标目录inode
+// 备注：4. 检查属性继承限制
+// 备注：5. 在目标目录中创建新的目录项（dirent）
+// 备注：6. 更新源inode的目录引用信息
+// 备注：7. 更新目录和源inode的时间戳
+// 备注：8. 写入所有修改
+// 备注：
+// 备注：【事务一致性】
+// 备注：
+// 备注：链接操作涉及多个btree更新（inode链接计数、dirent添加、目录时间戳），
+// 备注：所有操作在同一个事务中原子完成。
 int bch2_link_trans(struct btree_trans *trans,
 		    subvol_inum dir,  struct bch_inode_unpacked *dir_u,
 		    subvol_inum inum, struct bch_inode_unpacked *inode_u,
@@ -185,36 +269,81 @@ int bch2_link_trans(struct btree_trans *trans,
 	u64 now = bch2_current_time(c);
 	u64 dir_offset = 0;
 
+	// 备注：硬链接必须在同一子卷内
 	if (dir.subvol != inum.subvol)
 		return -EXDEV;
 
+	// 备注：读取并锁定源inode
 	try(bch2_inode_peek(trans, &inode_iter, inode_u, inum, BTREE_ITER_intent));
 
+	// 备注：更新源inode的ctime和链接计数
 	inode_u->bi_ctime = now;
 	try(bch2_inode_nlink_inc(inode_u));
 
+	// 备注：读取并锁定目标目录inode
 	try(bch2_inode_peek(trans, &dir_iter, dir_u, dir, BTREE_ITER_intent));
 
+	// 备注：检查属性继承是否兼容
 	if (bch2_reinherit_attrs(inode_u, dir_u))
 		return -EXDEV;
 
+	// 备注：更新目录的时间戳
 	dir_u->bi_mtime = dir_u->bi_ctime = now;
 
+	// 备注：在目录中创建新的目录项
 	try(bch2_dirent_create(trans, dir, dir_u,
 			       mode_to_type(inode_u->bi_mode),
 			       name, inum.inum,
 			       &dir_offset,
 			       STR_HASH_must_create));
 
+	// 备注：更新源inode的目录引用信息
 	inode_u->bi_dir		= dir.inum;
 	inode_u->bi_dir_offset	= dir_offset;
 
+	// 备注：写入所有修改到btree
 	try(bch2_inode_write(trans, &dir_iter, dir_u));
 	try(bch2_inode_write(trans, &inode_iter, inode_u));
 
 	return 0;
 }
 
+// 备注：bch2_unlink_trans - 删除目录项（unlink/rmdir）
+// 备注：@trans:	btree事务
+// 备注：@dir:		父目录的inode和子卷
+// 备注：@dir_u:		父目录inode的未打包表示
+// 备注：@inode:		要删除的inode（可选，用于验证）
+// 备注：@inode_u:		要删除的inode的未打包表示（输出）
+// 备注：@name:		要删除的文件名
+// 备注：@deleting_subvol:	是否正在删除子卷
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：删除目录中的文件或子目录。这是unlink系统调用的核心实现，
+// 备注：负责减少链接计数并在适当时删除文件数据。
+// 备注：
+// 备注：【删除流程】
+// 备注：
+// 备注：1. 读取并锁定父目录inode
+// 备注：2. 在目录中查找要删除的目录项
+// 备注：3. 读取并锁定目标inode
+// 备注：4. 减少目标inode的链接计数
+// 备注：5. 如链接计数变为0，标记inode为未链接（实际删除延后）
+// 备注：6. 从目录中删除目录项
+// 备注：7. 更新父目录的时间戳
+// 备注：8. 写入所有修改
+// 备注：
+// 备注：【特殊处理】
+// 备注：
+// 备注：- 目录必须为空才能删除（rmdir）
+// 备注：- 子卷根目录需要特殊处理
+// 备注：- Sticky位检查（如父目录设置了sticky位）
+// 备注：- 链接计数降为0时的清理操作
+// 备注：
+// 备注：【事务一致性】
+// 备注：
+// 备注：unlink操作涉及多个btree更新，所有操作在同一个事务中原子完成。
+// 备注：即使系统崩溃，也不会出现inode无目录项但数据未删除的情况。
 int bch2_unlink_trans(struct btree_trans *trans,
 		      subvol_inum dir, struct bch_inode_unpacked *dir_u,
 		      subvol_inum inode, struct bch_inode_unpacked *inode_u,
@@ -235,13 +364,16 @@ int bch2_unlink_trans(struct btree_trans *trans,
 
 	try(bch2_inode_peek_snapshot(trans, &dir_iter, dir_u, dir, snapshot, BTREE_ITER_intent));
 
+	// 备注：初始化目录哈希信息
 	struct bch_hash_info dir_hash;
 	try(bch2_hash_info_init(c, dir_u, &dir_hash));
 
+	// 备注：在目录中查找要删除的目录项
 	subvol_inum inum;
 	try(bch2_dirent_lookup_snapshot(trans, &dirent_iter, dir, snapshot, &dir_hash,
 					name, &inum, BTREE_ITER_intent));
 
+	// 备注：验证要删除的inode是否匹配
 	if ((inode.subvol || inode.inum) &&
 	    unlikely(!subvol_inum_eq(inode, inum))) {
 		CLASS(bch_log_msg, msg)(c);
@@ -340,6 +472,55 @@ static int subvol_update_parent(struct btree_trans *trans, u32 subvol, u32 new_p
 	return 0;
 }
 
+// 备注：bch2_rename_trans - 重命名或移动文件/目录
+// 备注：@trans:	btree事务
+// 备注：@src_dir:	源目录的inode和子卷
+// 备注：@src_dir_u:	源目录inode的未打包表示
+// 备注：@dst_dir:	目标目录的inode和子卷
+// 备注：@dst_dir_u:	目标目录inode的未打包表示
+// 备注：@src_inode_u:	源inode的未打包表示（输出）
+// 备注：@dst_inode_u:	目标inode的未打包表示（输出，可为空）
+// 备注：@src_name:	源文件名
+// 备注：@dst_name:	目标文件名
+// 备注：@mode:	重命名模式
+// 备注：
+// 备注：【功能说明】
+// 备注：
+// 备注：这是rename系统调用的核心实现，支持以下操作：
+// 备注：1. 重命名文件/目录（同一目录内）
+// 备注：2. 移动文件/目录（跨目录）
+// 备注：3. 交换两个文件/目录（RENAME_EXCHANGE）
+// 备注：4. 原子替换目标文件（RENAME_WHITEOUT）
+// 备注：
+// 备注：【重命名流程】
+// 备注：
+// 备注：1. 读取并锁定源目录inode
+// 备注：2. 如跨目录移动，读取并锁定目标目录inode
+// 备注：3. 查找源文件和目标文件的目录项
+// 备注：4. 检查跨子卷限制
+// 备注：5. 更新子卷的父目录（如移动子卷根）
+// 备注：6. 执行dirent的添加、删除或交换
+// 备注：7. 更新链接计数（如移动目录）
+// 备注：8. 更新相关inode的时间戳
+// 备注：9. 写入所有修改
+// 备注：
+// 备注：【限制条件】
+// 备注：
+// 备注：- 不能跨子卷移动（除非移动子卷根）
+// 备注：- 不能将目录移动到自身子目录（防止循环）
+// 备注：- Sticky位检查
+// 备注：- 权限检查（源和目标目录都需写权限）
+// 备注：
+// 备注：【特殊处理】
+// 备注：
+// 备注：- 移动目录时更新".."目录项
+// 备注：- 子卷根移动时更新子卷元数据
+// 备注：- 目标存在时的原子替换
+// 备注：
+// 备注：【事务一致性】
+// 备注：
+// 备注：rename操作涉及多个btree更新，所有操作在同一个事务中原子完成。
+// 备注：即使系统崩溃，不会出现文件既在源位置又在目标位置的情况。
 int bch2_rename_trans(struct btree_trans *trans,
 		      subvol_inum src_dir, struct bch_inode_unpacked *src_dir_u,
 		      subvol_inum dst_dir, struct bch_inode_unpacked *dst_dir_u,
@@ -358,11 +539,14 @@ int bch2_rename_trans(struct btree_trans *trans,
 	u64 src_offset, dst_offset;
 	u64 now = bch2_current_time(c);
 
+	// 备注：读取并锁定源目录inode
 	try(bch2_inode_peek(trans, &src_dir_iter, src_dir_u, src_dir, BTREE_ITER_intent));
 
+	// 备注：初始化源目录哈希信息
 	struct bch_hash_info src_hash, dst_hash;
 	try(bch2_hash_info_init(c, src_dir_u, &src_hash));
 
+	// 备注：如跨目录移动，读取并锁定目标目录inode
 	if (!subvol_inum_eq(dst_dir, src_dir)) {
 		try(bch2_inode_peek(trans, &dst_dir_iter, dst_dir_u, dst_dir, BTREE_ITER_intent));
 
@@ -372,6 +556,7 @@ int bch2_rename_trans(struct btree_trans *trans,
 		dst_hash = src_hash;
 	}
 
+	// 备注：在目录树中查找源和目标的目录项，准备重命名操作
 	try(bch2_dirent_rename(trans,
 			       src_dir, &src_hash,
 			       dst_dir, &dst_hash,

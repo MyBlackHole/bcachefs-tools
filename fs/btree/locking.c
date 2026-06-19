@@ -228,6 +228,20 @@ static noinline void lock_graph_pop_from(struct lock_graph *g, struct trans_wait
 	g->nr = i - g->g;
 }
 
+// 备注：lock_graph_down - 将事务入栈（DFS 向下推进一层）
+// 备注：
+// 备注：在新的栈帧中记录事务正在等待的锁信息：
+// 备注：  - trans: 等待者事务
+// 备注：  - node_want: 它想要的 btree 节点
+// 备注：  - lock_want: 它想要的锁类型
+// 备注：  - level/path_idx/waitlist 归零：开始遍历其持有锁
+// 备注：
+// 备注：栈帧间连续性检查：如果顶层帧的 node_want 不等于下一个帧的 node_have，
+// 备注：说明两个帧之间的锁依赖链已经断裂（中间状态变化了），
+// 备注：直接退栈（--g->nr）消除断裂的帧。
+// 备注：
+// 备注：字段逐个初始化而非聚合赋值：复用之前 walk 已分配的 heap buffer
+// 备注：（waitlist 的 data/size 保留，walk 间重用避免重复 malloc）
 static void lock_graph_down(struct lock_graph *g, struct btree_trans *trans)
 {
 	/*
@@ -252,6 +266,18 @@ static void lock_graph_down(struct lock_graph *g, struct btree_trans *trans)
 		--g->nr;
 }
 
+// 备注：lock_graph_remove_non_waiters - 验证已构建的锁依赖链是否仍然有效
+// 备注：
+// 备注：在从 @from 帧向下递归的间隙中，@from 对应的事务可能已经获取到了锁并
+// 备注：继续执行了（甚至可能阻塞在另一个完全不同的锁上）。我们需要验证链仍然有效。
+// 备注：
+// 备注：两种过期检测（逐帧检查）：
+// 备注：  1. @from->trans->locking != @from->node_want
+// 备注：     事务不再等待之前记录的节点了（它可能已经得到了锁）
+// 备注：  2. i[0].node_have != i[1].node_want
+// 备注：     父帧不再持有子帧等待的节点了（父帧的路径已经变化）
+// 备注：
+// 备注：任一条件满足 → 从过期帧位置 pop → 调用者重试
 /*
  * Revalidate the "who is blocked on whom" chain we've built up in @g before
  * acting on a suspected cycle.
@@ -298,6 +324,10 @@ static void trace_would_deadlock(struct lock_graph *g, struct btree_trans *trans
 	}));
 }
 
+// 备注：wake_up_trans - 唤醒阻塞在锁等待中的事务
+// 备注：通过 closure_get_not_zero 检查事务是否仍然存活，
+// 备注：然后 wake_up_process 唤醒其等待任务。
+// 备注：closure_put 释放引用计数（与 get_not_zero 配对）。
 static void wake_up_trans(struct btree_trans *trans)
 {
 	if (closure_get_not_zero(&trans->ref)) {
@@ -306,6 +336,22 @@ static void wake_up_trans(struct btree_trans *trans)
 	}
 }
 
+// 备注：abort_lock - 中止环中的指定事务以打破死锁
+// 备注：
+// 备注：根据牺牲者在环中的位置有两种处理方式：
+// 备注：
+// 备注：  1. 牺牲者是当前事务（i == g->g）：
+// 备注：     当前运行死锁检测器的事务就是最应该中止的。
+// 备注：     调用 bch2_trans_restart_foreign_task() 返回 RESTART 错误码，
+// 备注：     让当前事务重启（释放锁、重做遍历）。
+// 备注：     注意：函数名中的 "foreign" 指的是"中止的任务是自己"这个事实与
+// 备注：     "foreign" 原意不完全一致，但接口是同一套。
+// 备注：
+// 备注：  2. 牺牲者是其他事务（i > g->g）：
+// 备注：     设置其 lock_must_abort = true（标记强制中止），
+// 备注：     然后唤醒其任务。被唤醒的事务在 six_lock 睡眠循环中检测到
+// 备注：     lock_must_abort 后，会放弃锁等待并返回 RESTART。
+// 备注：     不返回错误码（返回 0）——当前事务继续检查是否还有更多环。
 static int abort_lock(struct lock_graph *g, struct trans_waiting_for_lock *i,
 		      int err)
 {
@@ -321,6 +367,19 @@ static int abort_lock(struct lock_graph *g, struct trans_waiting_for_lock *i,
 	}
 }
 
+// 备注：btree_trans_abort_preference - 选择环中的牺牲者
+// 备注：
+// 备注：比较两个锁等待图中的事务，决定谁更适合被中止以打破死锁。
+// 备注：优先级规则：
+// 备注：  1. 不能失败的事务（lock_may_not_fail=true）优先级最高
+// 备注：     → 永远不做牺牲品（返回另一方）
+// 备注：     lock_may_not_fail 表示事务已持有其他锁，不能放弃，
+// 备注：     如 btree node split 过程中获取 write lock。
+// 备注：  2. 否则选开始时间最晚的事务
+// 备注：     = 让开始得更早（等待更久）的事务继续运行
+// 备注：     这是一种公平性策略：让已经等了很久的事务优先完成。
+// 备注：
+// 备注：返回优先被中止的事务（牺牲者）。
 static struct trans_waiting_for_lock *
 btree_trans_abort_preference(struct trans_waiting_for_lock *l,
 			     struct trans_waiting_for_lock *r)
@@ -409,6 +468,19 @@ static int lock_graph_recursion_limit(struct lock_graph *g, struct btree_trans *
 	return break_cycle(g, cycle, g->g, BCH_ERR_transaction_restart_deadlock_recursion_limit);
 }
 
+// 备注：lock_graph_descend - DFS 递归下降：从当前帧的事务"等待队列"中取出一个
+// 备注：冲突的事务，将其作为下一帧入栈检查。
+// 备注：
+// 备注：入口条件：当前帧 top 的 waitlist 中有尚未遍历的冲突事务条目。
+// 备注：
+// 备注：执行逻辑：
+// 备注：  1. 环检测：遍历整栈，如果这个 trans 已经在栈中某帧存在 →
+// 备注：     发现环，调用 break_cycle 处理
+// 备注：  2. 栈满检查：8 帧已满 → 递归上限路径
+// 备注：  3. lock_graph_down：正常入栈，开始检查这个事务持有的所有路径的锁
+// 备注：
+// 备注：注意：这里不检查 trans 是否为 NULL（调用者保证 waitlist 中只存放了
+// 备注：非 NULL 的 trans 指针）。
 static inline int lock_graph_descend(struct lock_graph *g, struct btree_trans *trans,
 				     struct printbuf *cycle)
 {
@@ -444,6 +516,19 @@ static int waitlist_alloc_failed(struct lock_graph *g, struct printbuf *cycle)
 	return btree_trans_restart(g->g->trans, BCH_ERR_transaction_restart_deadlock_waitlist_alloc);
 }
 
+// 备注：bch2_check_for_deadlock - 锁等待图 DFS 环检测（核心死锁避免算法）
+// 备注：
+// 备注：当 btree_node_lock_nopath 即将睡眠等待一个被争用的锁时，
+// 备注：six_lock 框架调用 bch2_six_check_for_deadlock() → 本函数。
+// 备注：
+// 备注：算法：以当前事务为根，DFS 遍历锁等待图。
+// 备注：对每个事务，遍历其所有 btree_path 的所有层级，找到它持有的锁；
+// 备注：扫描每个持锁节点的 wait_fifo（睡眠等待者队列），找出等待该锁的事务；
+// 备注：递归检查那些事务又持有哪些锁... 如果回到起点（根事务），发现环。
+// 备注：
+// 备注：per-CPU 设计：每个 CPU 有自己的 lock_graph 实例，
+// 备注：DFS 栈固定 8 层（g[8]），超出触发递归限制路径。
+// 备注：所有遍历在 guard(rcu) + guard(preempt) 下进行（无锁、不睡眠）。
 int bch2_check_for_deadlock(struct btree_trans *trans, struct printbuf *cycle)
 {
 	btree_path_idx_t path_idx;
@@ -454,9 +539,13 @@ int bch2_check_for_deadlock(struct btree_trans *trans, struct printbuf *cycle)
 	guard(rcu)();
 	guard(preempt)();
 
+	// 备注：获取当前 CPU 的锁图栈（从 per-CPU 变量中读取）
 	struct lock_graph *g = this_cpu_ptr(&bch2_lock_graph);
 	g->nr = 0;
 
+	// 备注：如果当前事务已被标记为 lock_must_abort（环中牺牲者），
+	// 备注：且不是不能失败的事务（lock_may_not_fail），立即返回 RESTART。
+	// 备注：这是对其他 CPU 检测到环后唤醒我们的响应。
 	if (trans->lock_must_abort && !trans->lock_may_not_fail) {
 		if (cycle)
 			return -1;
@@ -465,6 +554,7 @@ int bch2_check_for_deadlock(struct btree_trans *trans, struct printbuf *cycle)
 		return btree_trans_restart(trans, BCH_ERR_transaction_restart_would_deadlock);
 	}
 
+	// 备注：根事务入栈（DFS 起点）
 	lock_graph_down(g, trans);
 next:
 	if (!g->nr)
@@ -472,12 +562,43 @@ next:
 
 	struct trans_waiting_for_lock *top = &g->g[g->nr - 1];
 
+	// 备注：阶段 1 — 遍历 waitlist 快照（之前拍下的冲突事务列表）
+	// 备注：如果 waitlist_idx < waitlist.nr，说明还有冲突事务待递归检查
 	if (top->waitlist_idx < top->waitlist.nr) {
 		try(lock_graph_descend(g, top->waitlist.data[top->waitlist_idx++], cycle));
 
 		goto next;
 	}
 
+	// 备注：阶段 2 — 多路径持有锁扫描
+	// 备注：
+	// 备注：waitlist 已空 → 重新扫描 top->trans 的所有 btree_path。
+	// 备注：在 bcachefs 中，一个 btree_transaction 可能同时持有多个
+	// 备注：btree_path（trans->paths[] 数组，最多 BTREE_ITER_MAX 个）。
+	// 备注：每个 btree_path 对应一次独立的 btree 遍历，可以在不同 btree ID
+	// 备注：（如 extent、inode、dirent 等）的不同层级（叶子=level 0 到根）上
+	// 备注：持有 six_lock。
+	// 备注：
+	// 备注：【多路径死锁场景】
+	// 备注：  事务 A   → path[0]: 持有 extent 节点 X（读锁）
+	// 备注：             path[1]: 等待 inode 节点 Y（意向锁）
+	// 备注：  事务 B   → path[0]: 持有 inode 节点 Y（读锁）
+	// 备注：             path[1]: 等待 extent 节点 X（意向锁）
+	// 备注：
+	// 备注：锁图必须跨路径追踪依赖边：A.path[1]→Y→B.path[0] 且 B.path[1]→X→A.path[0]，
+	// 备注：形成环路。如果只检查单路径（如 A 只在 path[0] 上找等待者），会遗漏此环。
+	// 备注：
+	// 备注：【遍历策略】
+	// 备注：每帧从 top->path_idx 记录的断点位置继续，而非每次从头扫描。
+	// 备注：对每个路径，逐层级（level 0→BTREE_MAX_DEPTH）检查是否有持锁，
+	// 备注：找到持锁节点 → 扫描 wait_fifo 找冲突者 → 入 waitlist 待递归。
+	// 备注：
+	// 备注：【linked_paths】
+	// 备注：某些路径通过 path->linked 字段形成"共享锁路径群组"
+	// 备注：（如 btree_trans 中 split/merge 时 parent 路径与 child 路径
+	// 备注：指向同一节点的不同层级）。linked_paths 共享同一组已锁定节点
+	// 备注：的锁计数，遍历时通过 btree_node_locked_type() 的聚合语义
+	// 备注：（linked 路径合并检查）避免重复遍历。
 	top->waitlist_idx = top->waitlist.nr = 0;
 
 	struct btree_path *paths = rcu_dereference(top->trans->paths);
@@ -486,9 +607,18 @@ next:
 
 	unsigned long *paths_allocated = trans_paths_allocated(paths);
 
+	// 备注：阶段 2a — 遍历事务持有的所有路径
+	// 备注：trans_for_each_path_idx_from 从上次停下的 path_idx 继续（断点续扫）
+	// 备注：path_idx 是路径在 trans->paths[] 数组中的索引，非指针：
+	// 备注：paths 可能被 bch2_trans_realloc_paths() 重新分配使指针失效，
+	// 备注：但 path_idx（数组内偏移）始终有效。
 	trans_for_each_path_idx_from(paths_allocated, *trans_paths_nr(paths),
 				     path_idx, top->path_idx) {
 		struct btree_path *path = paths + path_idx;
+		// 备注：跳过没有持有任何锁的路径
+		// 备注：nodes_locked 是路径在各层级上 locks_want 的位图（bitmask），
+		// 备注：路径可能已创建但尚未获取锁（如遍历中临时释放了所有锁的路径），
+		// 备注：快速跳过节省 CPU。
 		if (!path->nodes_locked)
 			continue;
 
@@ -497,6 +627,9 @@ next:
 			top->level		= 0;
 		}
 
+		// 备注：阶段 2b — 遍历路径的每一层（叶子=0，根=BTREE_MAX_DEPTH-1）
+		// 备注：btree 深度通常在 3-6 层（32 位扇区索引 -> radix tree），
+		// 备注：但路径可能在任何层级持有锁，所以逐级扫描 0..BTREE_MAX_DEPTH。
 		while (top->level < BTREE_MAX_DEPTH) {
 			int lock_held = btree_node_locked_type(path, top->level);
 
@@ -505,6 +638,11 @@ next:
 				continue;
 			}
 
+			// 备注：读取路径在此层级持有的节点指针
+			// 备注：使用 READ_ONCE 防止编译器优化导致撕裂读
+			// 备注：注意：同一 btree_node 可能被多个路径锁住（如一个在
+			// 备注：level 0，另一个在 level 1 指向同一节点的父级指针），
+			// 备注：但因为锁图按 per-level per-path 帧化，不会重复入边。
 			top->node_have = &READ_ONCE(path->l[top->level].b)->c;
 			if (unlikely(IS_ERR_OR_NULL(top->node_have))) {
 				/*
@@ -529,6 +667,21 @@ next:
 				goto next;
 			}
 
+			// 备注：阶段 2c — 无锁遍历节点 wait_fifo（RCU 保护下）
+			// 备注：遍历节点的等待队列，找出所有"等待的锁类型与当前路径
+			// 备注：在此层级持有的锁类型冲突"的事务。
+			// 备注：
+			// 备注：lock_type_conflicts(lock_held, want) 判断：
+			// 备注：  两个锁类型之和 > 1 即为冲突
+			// 备注：  S+S=0(不冲突)  S+I=1(不冲突)  S+X=2(冲突)
+			// 备注：  I+I=2(冲突)     I+X=3(冲突)
+			// 备注：
+			// 备注：冲突者快照到 top->waitlist（per-frame darray），
+			// 备注：然后递归（goto next → phase 1 → lock_graph_descend）
+			// 备注：检查该事务持有的所有路径的锁。
+			// 备注：
+			// 备注：waitlist 使用 GFP_NOWAIT|__GFP_NOWARN 分配（不能睡眠），
+			// 备注：如果分配失败 → waitlist_alloc_failed 路径。
 			/*
 			 * Lockless walk of wait_fifo: we're under guard(rcu),
 			 * trans memory is RCU-deferred in bch2_trans_put, and
@@ -562,6 +715,10 @@ next:
 
 			top->level++;
 
+			// 备注：如果 waitlist 中新增了冲突者，立即递归检查
+			// 备注：性能优化 - 在继续扫描当前路径的其他层级之前，优先
+			// 检查新发现的竞争事务是否形成环。这能更快发现死锁，避免不
+			// 必要的路径遍历。然后通过 goto next 回到阶段 1。
 			if (top->waitlist_idx < top->waitlist.nr)
 				goto next;
 		}
@@ -569,10 +726,16 @@ next:
 up:
 	if (cycle)
 		print_chain(cycle, g);
+	// 备注：回溯：当前帧所有路径已遍历完毕（没有更多冲突者），
+	// 备注：退栈回到上一帧继续扫描它的 waitlist 或路径。
 	--g->nr;
 	goto next;
 }
 
+// 备注：locking_node - 从 six_lock 反解出 btree 节点指针
+// 备注：container_of 从 six_lock 反解到 btree_bkey_cached_common，
+// 备注：再根据 cached 标志决定是否转为 struct btree。
+// 备注：如果节点是 key cache entry（b->cached=true），返回 NULL。
 static inline struct btree *locking_node(struct six_lock *lock)
 {
 	struct btree_bkey_cached_common *b = container_of(lock, struct btree_bkey_cached_common, lock);
@@ -581,6 +744,18 @@ static inline struct btree *locking_node(struct six_lock *lock)
 		: NULL;
 }
 
+// 备注：node_reuse_race - 检测节点是否已被回收重用
+// 备注：比较锁请求时拍下的 hash_val（在 btree_node_lock_nopath 中记录）
+// 备注：与当前节点的 hash_val。如果不同，说明节点已被回收并分配给另一个
+// 备注：不同的 btree 节点（或同一节点的不同代）。
+// 备注：
+// 备注：有两种检查方式：
+// 备注：  1. locking_hash_val ≠ 0 → 直接比较哈希值
+// 备注：  2. locking_root_id ≠ -1 → 检查根节点指针是否变化
+// 备注：  3. 都不满足 → 不需要检查（如 key cache entry）
+// 备注：
+// 备注：只有 btree 节点需要此检查（interior update 可能通过 off-path
+// 备注：方式如 btree_node_reclaim 的 six_trylock_intent 偷取节点）。
 static inline bool node_reuse_race(struct btree_trans *trans, struct btree *b)
 {
 	if (trans->locking_hash_val)
@@ -591,8 +766,31 @@ static inline bool node_reuse_race(struct btree_trans *trans, struct btree *b)
 		return false;
 }
 
+// 备注：bch2_six_check_for_deadlock - six_lock 框架回调的死锁检测入口
+// 备注：
+// 备注：当 six_lock_ip_waiter 或 six_lock_contended 准备将当前任务
+// 备注：放入等待队列前，调用此函数检查是否会导致死锁。
+// 备注：
+// 备注：执行步骤：
+// 备注：  1. smp_mb() 内存屏障：确保看到其他 CPU 的最新状态
+// 备注：  2. node_reuse_race() 检查：节点不是被回收入其他用途？
+// 备注：  3. 调度器 wake-CPU hint（内核模式）
+// 备注：  4. bch2_check_for_deadlock() 运行真正的 DFS 环检测
+// 备注：
+// 备注：返回值：
+// 备注：  0 → 无死锁，可以睡眠等待
+// 备注：  RESTART → 检测到死锁或节点重用了，需要放弃锁并重启事务
 int bch2_six_check_for_deadlock(struct six_lock *lock, struct six_lock_waiter *w)
 {
+	// 备注：smp_mb() — 全屏障
+	// 备注：与每个插入 wait_fifo 插槽的 spin_unlock(&lock->wait_lock) 配对。
+	// 备注：锁图遍历器即将在其他 CPU 上无锁读取各种数据
+	// 备注：（trans->locking、->paths、->nodes_locked、各锁的 wait_fifo 槽），
+	// 备注：这些数据都是在不同的 wait_lock 下写入的，写入者的 unlock 操作不会
+	// 备注：与我们的读取操作形成 happens-before 关系。
+	// 备注：没有此屏障，在弱内存序架构（ARM/PowerPC）上会读到过期快照，
+	// 备注：可能错过刚在其他 CPU 上形成的环——该"错过"的容错是"下次会被检测到"，
+	// 备注：但如果环中所有参与者都睡着了，就没有"下次"了。
 	/*
 	 * Full barrier paired with every inserter's spin_unlock(&lock->wait_lock)
 	 * that published their wait_fifo slot. The lockless walker about to run
@@ -653,6 +851,21 @@ int bch2_six_check_for_deadlock(struct six_lock *lock, struct six_lock_waiter *w
 	return bch2_check_for_deadlock(trans, NULL);
 }
 
+// 备注：btree_node_lock_increment - six_lock 重入：递增已有锁的引用计数
+// 备注：
+// 备注：six_lock 支持重入（re-entrant）：同一锁可以被同一获取者多次获取。
+// 备注：如果事务内已有（任意）btree_path 在目标节点的同一层级持有 >= want
+// 备注：类型的锁，则无需重新经过 slowpath 等待，只需通过 six_lock_increment
+// 备注：增加该锁类型的引用计数即可。
+// 备注：
+// 备注：trans_for_each_path 遍历事务的所有路径（非当前请求路径）检查：
+// 备注：  &path->l[level].b->c == b               ← 同一节点
+// 备注：  btree_node_locked_type(path, level) >= want  ← 锁类型足够
+// 备注：如果找到 → six_lock_increment() 递增引用计数，返回 true。
+// 备注：
+// 备注：典型场景：btree split 时 parent 路径已锁住节点 A（INTENT），
+// 备注：child 路径也需要节点 A 同一层级的锁——通过重入递增 INTENT 计数，
+// 备注：避免 child 路径重复等待 parent 路径已经持有的锁。
 /*
  * Lock a btree node if we already have it locked on one of our linked
  * iterators:
@@ -675,6 +888,23 @@ static inline bool btree_node_lock_increment(struct btree_trans *trans,
 	return false;
 }
 
+// 备注：bch2_btree_node_lock_slowpath - B-tree 节点锁慢速路径
+// 备注：
+// 备注：当 btree_node_lock 的快速路径（six_trylock_type）失败时调用。
+// 备注：
+// 备注：执行流程：
+// 备注：  1. 先尝试 btree_node_lock_increment：检查是否通过 six_lock
+// 备注：     重入机制（事务内其他路径已持有该节点锁）可以递增引用计数。
+// 备注：     是→ 递增后返回，无需阻塞。
+// 备注：  2. 递增失败 → btree_node_lock_nopath()：
+// 备注：     设置 trans->locking / locking_wait 信息，
+// 备注：     然后 six_lock_ip_waiter()：
+// 备注：       → 注册到节点 wait_fifo
+// 备注：       → bch2_six_check_for_deadlock() 死锁检测
+// 备注：       → 无死锁则 schedule() 睡眠
+// 备注：  3. 返回 0（成功）或 RESTART（死锁/错误）
+// 备注：
+// 备注：慢速路径可能触发事务重启，调用者需支持 lockrestart_do 重试。
 int bch2_btree_node_lock_slowpath(struct btree_trans *trans,
 			struct btree_path *path,
 			struct btree_bkey_cached_common *b,
@@ -698,10 +928,31 @@ int bch2_btree_node_lock_slowpath(struct btree_trans *trans,
 	return 0;
 }
 
+// 备注：bch2_btree_node_lock_write_contended - 从 read 升级到 write 锁
+// 备注：
+// 备注：当 btree node split / merge / rebalance 等结构性操作时，
+// 备注：需要将已持有的 intent+read 锁升级为 write 锁（独占写）。
+// 备注：
+// 备注：执行流程：
+// 备注：  1. 清除 locking_hash_val / locking_root_id（off-path lock，
+// 备注：     不需要节点重用检查，因为我们已持有 intent 锁）
+// 备注：  2. 临时释放所有 read 锁计数（six_lock_readers_add(-readers)），
+// 备注：     因为 six_lock_write 要求 reader count 为 0 才能获得 write 锁
+// 备注：  3. 调用 btree_node_lock_nopath 请求 write 锁——这个调用会在
+// 备注：     内部通过 six_lock_ip_waiter → bch2_six_check_for_deadlock
+// 备注：     进行死锁检测
+// 备注：  4. 如果获取失败（死锁或重启），恢复 read 锁计数
+// 备注：  5. 标记路径的锁状态为 intent-locked（因为 write 失败后要回退到 intent）
+// 备注：
+// 备注：注意：临时释放 read lock 是安全的，因为我们仍持有 intent 锁，
+// 备注：其他写者无法获取 write 锁（intent 阻塞 write），其他读者可以
+// 备注：暂时进入但会在恢复时重新计数。
 int bch2_btree_node_lock_write_contended(struct btree_trans *trans, struct btree_path *path,
 				 struct btree_bkey_cached_common *b,
 				 bool lock_may_not_fail)
 {
+	// 备注：清除路径标识——这是 off-path 锁请求（不通过 btree_path
+	// 备注：描述符锁定），无需 hash_val 检查重用。
 	trans->locking_hash_val = 0;
 	trans->locking_root_id	= -1;
 
@@ -726,6 +977,22 @@ int bch2_btree_node_lock_write_contended(struct btree_trans *trans, struct btree
 	return ret;
 }
 
+// 备注：bch2_btree_node_lock_with_path - 为未通过路径访问的节点获取锁
+// 备注：
+// 备注：当调用者需要锁住一个 btree 节点，但该节点不是通过正常的
+// 备注：btree_path 遍历到达时（如 interior node update 中 off-path
+// 备注：加锁），此函数创建一个临时未锁定路径来记录锁持有关系。
+// 备注：
+// 备注：关键设计：
+// 备注：  1. bch2_path_get_unlocked_mut：分配一个临时路径，不锁定任何节点
+// 备注：  2. 设置 trans->locking_hash_val=0：跳过节点重用检查（调用者
+// 备注：     已验证节点有效性）
+// 备注：  3. btree_node_lock：走标准锁获取路径（快/慢路径 + 死锁检测）
+// 备注：  4. 成功后：标记路径锁状态、记录 lock_seq 和节点指针
+// 备注：  5. 失败后：释放临时路径
+// 备注：
+// 备注：调用者通过 bch2_btree_node_unlock_with_path() 释放锁，
+// 备注：传回 path_idx_out 标识路径。
 /*
  * Lock @b when the caller doesn't already have a path for it: create a
  * temporary unlocked path, take the lock, then record the lock on the path
@@ -847,6 +1114,25 @@ err:
 	return -restart_err ?: -1;
 }
 
+// 备注：__bch2_btree_node_relock - 单层级 btree 节点重锁
+// 备注：
+// 备注：在事务重启后，尝试重新获取路径在指定层级上的锁。
+// 备注：重锁不使用 slowpath（不睡眠、不注册 wait_fifo、不检测死锁），
+// 备注：因为此时事务刚重启，尚未持有任何锁。
+// 备注：
+// 备注：两种重锁路径（任一成功即可）：
+// 备注：  1. six_relock_type(&b->c.lock, want, lock_seq)：标准 SIX 重锁
+// 备注：     需要提供 lock_seq 验证节点未在间隙期被回收。
+// 备注：     lock_seq 是 six_lock 的单调递增序列号，每次写锁释放时递增。
+// 备注：     如果 lock_seq 匹配 → 节点仍然是原来那个节点（未被回收重用）。
+// 备注：
+// 备注：  2. btree_node_lock_increment：通过 six_lock 重入机制，
+// 备注：     如果事务内其他路径已经锁住了同一个节点，可以直接递增
+// 备注：     引用计数（无需再次阻塞等待），需要 lock_seq 先验证身份。
+// 备注：
+// 备注：race_fault()：故障注入测试点，用于测试重锁失败路径。
+// 备注：
+// 备注：失败时记录 trace 事件（btree_path_relock_fail）用于调试。
 bool __bch2_btree_node_relock(struct btree_trans *trans,
 			      struct btree_path *path, unsigned level,
 			      bool trace)
@@ -874,6 +1160,41 @@ fail:
 
 /* upgrade */
 
+
+// 备注：【upgrade 锁升级】
+// 备注：在 btree 遍历过程中，路径可能最初只要求 read 锁（遍历时），
+// 备注：但后续操作需要 intent 锁（如插入/删除时需要阻塞结构变更）。
+// 备注：锁升级从当前已持有的锁类型尝试升级到更高的类型。
+
+// 备注：bch2_btree_node_upgrade - 升级路径指定层级的锁（read→intent）
+// 备注：
+// 备注：入口条件：path 在 level 层级已持有 read 锁或无锁（relock 场景）。
+// 备注：
+// 备注：btree_lock_want 决策路径：
+// 备注：  - UNLOCKED: 该层不在需要范围 → 已满足
+// 备注：  - READ_LOCKED: 只需要读锁 → 调用 bch2_btree_node_relock
+// 备注：  - INTENT_LOCKED: 需要升级 → 进入升级流程
+// 备注：  - WRITE_LOCKED: BUG（不应该通过 upgrade 路径获取写锁）
+// 备注：
+// 备注：升级策略（三种方式依次尝试）：
+// 备注：  1. 如果已持有 read 锁 → six_lock_tryupgrade()：
+// 备注：     尝试将 SIX 锁从 read 原子升级到 intent
+// 备注：     无需释放重取，无死锁风险
+// 备注：  2. 如果无锁（relock 场景）→ six_relock_type(INTENT)：
+// 备注：     直接请求 intent 锁（跳过 read 中间态）
+// 备注：  3. 如果 lock_seq 匹配 → btree_node_lock_increment + btree_node_unlock：
+// 备注：     six_lock 支持重入（re-entrant）：事务内已有路径持有该节点的
+// 备注：     INTENT 锁时，six_lock_increment 增加 intent 引用计数后，
+// 备注：     当前路径可以"重入"获取同一 INTENT 锁（无需阻塞等待）。
+// 备注：     然后释放当前路径原有的读锁（或无锁），跳转到 success 标记。
+// 备注：     这等价于将另一个路径的 INTENT 引用"转移"给当前路径。
+// 备注：
+// 备注：成功：标记路径锁类型为 INTENT_LOCKED（使用 noreset 版本，
+// 备注：因为升级不改变锁的"开始持有"时间）。
+// 备注：失败：记录 trace 事件（btree_path_upgrade_fail），返回 false。
+/*
+ * upgrade
+ */
 bool bch2_btree_node_upgrade(struct btree_trans *trans,
 			     struct btree_path *path, unsigned level)
 {

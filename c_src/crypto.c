@@ -1,3 +1,17 @@
+// ============================================
+// 备注：加密操作实现
+//
+// 备注：实现了 crypto.h 中声明的所有函数。
+// 备注：使用 libsodium 的 scrypt 进行口令派生，ChaCha20 进行加密。
+//
+// 备注：关键函数：
+// 备注：  read_passphrase() — 关闭终端 echo 后读取口令
+// 备注：  derive_passphrase() — scrypt(口令, salt) → 256-bit 派生密钥
+// 备注：  bch2_passphrase_check() — 验证口令是否正确
+// 备注：  bch2_add_key() — 将派生密钥通过 add_key() 加入内核 keyring
+// 备注：  bch_sb_crypt_init() — 初始化 superblock 加密字段
+// 备注：  bch_crypt_update_passphrase() — 更新加密口令
+// ============================================
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>

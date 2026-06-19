@@ -22,6 +22,9 @@ build.vars
 !.github/dependabot.yml
 !.github/workflows/
 !.editorconfig
+!.libbcache
+!.bchfs-shims
+!.tests
 
 bcachefs-principles-of-operation.*
 doc/generated/

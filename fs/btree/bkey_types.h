@@ -101,14 +101,18 @@ static inline size_t bkey_val_bytes(const struct bkey *k)
 	return bkey_val_u64s(k) * sizeof(u64);
 }
 
+// 备注：计算大小(key + value)(单位 64 位)
 static inline void set_bkey_val_u64s(struct bkey *k, unsigned val_u64s)
 {
+	// 备注：计算大小(key + value)(单位 64 位)
 	unsigned u64s = BKEY_U64s + val_u64s;
 
 	BUG_ON(u64s > U8_MAX);
+	// 备注：设置大小
 	k->u64s = u64s;
 }
 
+// 备注：设置 bytes 大小
 static inline void set_bkey_val_bytes(struct bkey *k, unsigned bytes)
 {
 	set_bkey_val_u64s(k, DIV_ROUND_UP(bytes, sizeof(u64)));
@@ -127,12 +131,14 @@ static inline void set_bkey_val_bytes(struct bkey *k, unsigned bytes)
 	 (_k)->type == KEY_TYPE_extent_whiteout)
 
 /* bkey with split value, const */
+// 备注：带分割值的 bkey, const
 struct bkey_s_c {
 	const struct bkey	*k;
 	const struct bch_val	*v;
 };
 
 /* bkey with split value */
+// 备注：带分割值的 bkey
 struct bkey_s {
 	union {
 	struct {

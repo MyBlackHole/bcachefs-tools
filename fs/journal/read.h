@@ -9,6 +9,7 @@
 void bch2_journal_pos_from_member_info_set(struct bch_fs *);
 void bch2_journal_pos_from_member_info_resume(struct bch_fs *);
 
+// 备注：是否需要忽略 
 static inline bool journal_replay_ignore(struct journal_replay *i)
 {
 	return !i || i->ignore_blacklisted || i->ignore_not_dirty;

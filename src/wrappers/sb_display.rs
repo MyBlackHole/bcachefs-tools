@@ -1,3 +1,18 @@
+// ============================================
+// 备注：Superblock 格式化输出（带设备名）
+//
+// 备注：重写原因：C 版的 bch2_sb_to_text_with_names() 在 rust_shims.c 中有
+// 备注：分配器不匹配的 bug：
+// 备注：  C 代码调用 bch2_scan_device_sbs（Rust FFI），该函数返回 Vec 分配的内存
+// 备注：  （通过 forget() 防止 Rust 释放），然后 C 端用 darray_exit (kvfree) 释放。
+// 备注：  这导致内存分配器不匹配 → heap corruption。
+//
+// 备注：本版本在纯 Rust 中实现，Vec 使用正确的 allocator 自动释放。
+//
+// 备注：输出的设备 UUID 格式：
+// 备注：  member_alive() 检查 uuid 是否非零且不等于 BCH_SB_MEMBER_DELETED_UUID
+// ============================================
+//
 // SPDX-License-Identifier: GPL-2.0
 //
 // Superblock display with device names — Rust replacement for the C
@@ -145,3 +160,4 @@ pub unsafe fn sb_to_text_with_names(
     // sbs (Vec<(PathBuf, bch_sb_handle)>) is dropped here — freed by
     // Rust's allocator, not kvfree. This is the whole point.
 }
+

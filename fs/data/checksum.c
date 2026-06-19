@@ -17,6 +17,60 @@
 #include <crypto/poly1305.h>
 #include <keys/user-type.h>
 
+// 备注：============================================================================
+// 备注：bcachefs 校验和系统 - 核心实现
+// 备注：============================================================================
+// 备注：
+// 备注：【概述】
+// 备注：
+// 备注：bcachefs 支持多种校验和算法，包括:
+// 备注：- CRC32C: 快速软件实现，Intel CPU 有硬件加速
+// 备注：- CRC64: 更长的校验和，碰撞概率更低
+// 备注：- XXHash: 高性能非加密哈希
+// 备注：- ChaCha20-Poly1305: 加密 + 认证 (AEAD)
+// 备注：
+// 备注：【状态抽象】
+// 备注：
+// 备注：bch2_checksum_state 封装了不同算法的状态:
+// 备注：- 对于 CRC 类算法: 只需要一个 seed 值
+// 备注：- 对于 XXHash: 需要保存完整的 xxh64_state
+// 备注：
+// 备注：这种抽象允许我们在不丢失状态的情况下跨多个页面计算校验和。
+// 备注：
+// 备注：【校验和计算流程】
+// 备注：
+// 备注：1. 初始化: bch2_checksum_init()
+// 备注：- CRC: 设置初始 seed (0 或 ~0)
+// 备注：- XXHash: 重置哈希状态
+// 备注：
+// 备注：2. 更新: bch2_checksum_update()
+// 备注：- 遍历数据块
+// 备注：- 更新算法状态
+// 备注：- 支持增量计算
+// 备注：
+// 备注：3. 完成: bch2_checksum_final()
+// 备注：- CRC: 返回 seed (可能需要异或 ~0)
+// 备注：- XXHash: 计算最终摘要
+// 备注：
+// 备注：【生物(bio)校验和】
+// 备注：
+// 备注：__bch2_checksum_bio() 处理分散的 bio 向量:
+// 备注：- 遍历 bio_vec 数组
+// 备注：- 处理每个向量的数据
+// 备注：- 支持 nonce (用于加密模式)
+// 备注：
+// 备注：【使用场景】
+// 备注：
+// 备注：1. 写入时: 计算数据校验和并存储在 extent 中
+// 备注：2. 读取时: 重新计算并与存储值比较
+// 备注：3. 合并时: 合并两个相邻 extent 的校验和
+// 备注：
+// 备注：【性能考虑】
+// 备注：
+// 备注：- CRC32C: 使用 Intel CRC32 指令，~3-4 cycles/byte
+// 备注：- XXHash: 更快的非加密哈希，适合大对象
+// 备注：- 异步计算: 校验和计算可与 IO 并行
+
 /*
  * bch2_checksum state is an abstraction of the checksum state calculated over different pages.
  * it features page merging without having the checksum algorithm lose its state.
@@ -26,9 +80,12 @@
 
 struct bch2_checksum_state {
 	union {
+	// 备注：用于 CRC 算法的状态
 		u64 seed;
+	// 备注：用于 XXHash 的状态
 		struct xxh64_state h64state;
 	};
+	// 备注：校验和算法类型
 	unsigned int type;
 };
 
@@ -108,6 +165,7 @@ static void bch2_chacha20_init(struct chacha_state *state,
 	memzero_explicit(key_words, sizeof(key_words));
 }
 
+// 备注：开始加密
 void bch2_chacha20(const struct bch_key *key, struct nonce nonce,
 		   void *data, size_t len)
 {
@@ -171,6 +229,7 @@ int bch2_encrypt(struct bch_fs *c, unsigned type,
 		  struct nonce nonce, void *data, size_t len)
 {
 	if (!bch2_csum_type_is_encryption(type))
+		// 备注：没有加密算法
 		return 0;
 
 	if (bch2_fs_inconsistent_on(!c->chacha20_key_set,

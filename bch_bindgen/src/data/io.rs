@@ -1,4 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
+// ============================================
+// 备注：bcachefs 异步 I/O 操作
+//
+// 备注：ReadOp: 真正的异步 Future，C shim 提交读取请求后立即返回，
+// 备注：         bio 完成回调在 libaio 完成线程中唤醒 Rust waker。
+//
+// 备注：WriteOp: 当前还是同步实现（等待异步化改造）。
+//
+// 备注：这个模块展示了 bcachefs 混合 Rust/C 异步模型的桥梁：
+// 备注：  Rust Future → C IO 提交 → libaio 完成 → C 回调 → Rust waker
+// ============================================
 //
 // IO operations on a bcachefs filesystem.
 //
@@ -58,6 +69,10 @@ pub struct WriteResult {
     pub sectors_delta: i64,
 }
 
+// 备注：WriteState — 堆分配的写入操作状态。
+// 备注：bch_write_op 必须在 offset 0（C 端 end_io 回调直接强转指针）。
+// 备注：completed (AtomicBool) + waker 构成了 Rust Future 的完成通知机制。
+// 备注：AtomicBool 用了 Release/Acquire 语义确保 waker 的可见性。
 // Heap-allocated state for an in-flight write.
 // bch_write_op is at offset 0 so end_io can cast directly to WriteState.
 #[repr(C)]
@@ -73,6 +88,9 @@ unsafe impl Sync for WriteState {}
 
 /// end_io callback for bch_write_op — signals completion and wakes
 /// the Rust future.
+// 备注：write_endio — C 回调：IO 完成时由 libaio 完成线程调用。
+// 备注：op → WriteState 的转换依赖于 repr(C) + op at offset 0 的布局保证。
+// 备注：先 take waker 再 store true，避免 waker 被并发消费。
 unsafe extern "C" fn write_endio(op: *mut c::bch_write_op) {
     // WriteState has op at offset 0
     let state = op as *mut WriteState;
@@ -87,6 +105,9 @@ unsafe extern "C" fn write_endio(op: *mut c::bch_write_op) {
 /// Async write operation on a bcachefs filesystem.
 ///
 /// IO is submitted in new(); poll checks for completion.
+// 备注：WriteOp — 异步写入 Future。
+// 备注：new() 中通过 rust_write_submit C 函数提交写入请求，返回后立刻返回。
+// 备注：poll() 检查 completed 标志，IO 完成前注册 waker 并返回 Pending。
 pub struct WriteOp {
     state: Pin<Box<WriteState>>,
     /// Set if rust_write_submit returned an error (disk reservation failure).
@@ -312,3 +333,4 @@ fn noop_waker() -> Waker {
 
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
+

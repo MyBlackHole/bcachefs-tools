@@ -1,3 +1,23 @@
+// ============================================
+// 备注：bcachefs 加密密钥管理
+//
+// 备注：用户空间密钥管理：通过内核 keyctl 系统调用，将解密密钥存储在
+// 备注：Linux 内核密钥环（keyring）中，而不是在用户空间保存密钥材料。
+//
+// 备注：关键类型：
+// 备注：  KeyHandle — 证明密钥已成功加入/找到内核密钥环（ZST：零大小类型）
+// 备注：  Passphrase — 用户口令，使用 ZeroizeOnDrop 确保内存清理
+// 备注：  Keyring — 目标密钥环（session/user/user-session）
+// 备注：  UnlockPolicy — 解锁策略：Fail/Wait/Ask/Stdin
+//
+// 备注：工作流：
+// 备注：  1. 用户输入口令（或从 stdin 读取）
+// 备注：  2. 口令通过 ChaCha20 派生出磁盘加密密钥
+// 备注：  3. 派生密钥通过 add_key() 加入内核 keyring
+// 备注：  4. 后续挂载时从 keyring 搜索并使用该密钥
+//
+// 备注：密钥命名约定：bcachefs:<UUID>，存储在 "user" 类型 keyring 中。
+// ============================================
 use std::{
     ffi::{CStr, CString},
     fs,
@@ -350,3 +370,4 @@ fn get_stdin_type() -> StdinType {
         StdinType::Other
     }
 }
+

@@ -1,3 +1,20 @@
+// ============================================
+// 备注：BcachefsHandle — IOCTL 操作句柄
+//
+// 备注：BcachefsHandle 是用户空间与 bcachefs 内核模块交互的核心入口。
+// 备注：封装了对已挂载文件系统的所有 IOCTL 操作。
+//
+// 备注：IOCTL 版本兼容策略（v2_v1_ioctl! 宏）：
+// 备注：  - 首选 v2 IOCTL（带 8KB 错误消息缓冲区）
+// 备注：  - v2 失败返回 ENOTTY → fallback 到 v1
+// 备注：  - 这种机制确保新旧内核兼容
+//
+// 备注：打开方式（4 种路径类型）：
+// 备注：  1. UUID 字符串 → sysfs 查找
+// 备注：  2. 挂载点路径 → 通过 FS_IOC_GETFSSYSFSPATH 获取 sysfs 路径
+// 备注：  3. 块设备路径 → 读取 superblock + sysfs
+// 备注：  4. 普通文件路径 → 读取 superblock
+// ============================================
 use std::ffi::CStr;
 use std::io;
 use std::mem;
@@ -24,6 +41,9 @@ use errno::Errno;
 use rustix::ioctl::{self, Setter};
 
 /// Try a v2 ioctl (with error message buffer), falling back to v1 on ENOTTY.
+// 备注：v2_v1_ioctl! — IOCTL 版本兼容宏。
+// 备注：v2 版本在参数中嵌入 8KB 错误消息缓冲区（err.msg_ptr/msg_len），
+// 备注：当内核支持时提供更详细的错误信息。否则静默 fallback 到 v1。
 macro_rules! v2_v1_ioctl {
     ($fd:expr, $V2:ty, $V1:ty, $v2_arg:expr, $v1_arg:expr) => {{
         let mut err_buf = [0u8; 8192];
@@ -641,3 +661,4 @@ fn parse_sysfs_link(target: &str) -> Option<(&str, i32)> {
 
     Some((uuid_str, dev_idx))
 }
+

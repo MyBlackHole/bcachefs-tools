@@ -59,7 +59,9 @@ static inline const char *bch2_d_type_str(unsigned d_type)
 
 /* When can be set: */
 enum opt_flags {
+	// 备注：文件系统选项 
 	OPT_FS			= BIT(0),	/* Filesystem option */
+	// 备注：设备选项 
 	OPT_DEVICE		= BIT(1),	/* Device option */
 	OPT_INODE		= BIT(2),	/* Inode option */
 	OPT_FORMAT		= BIT(3),	/* May be specified at format time */
@@ -601,6 +603,7 @@ struct bch_opts_mask {
 	unsigned long	d[BITS_TO_LONGS(bch2_opts_nr)];
 };
 
+// 备注：文件系统设置选项 
 struct bch_opts {
 #define x(_name, _bits, ...)	unsigned _name##_defined:1;
 	BCH_OPTS()
@@ -608,6 +611,11 @@ struct bch_opts {
 
 #define x(_name, _bits, ...)	_bits	_name;
 	BCH_OPTS()
+	// 备注：recovery_pass_last: 指定通过哪个pass退出recovery
+	// 备注：norecovery: 在日志重放之前立即退出恢复
+	// 备注：recovery_pass_last: 指定通过后退出恢复
+	// 备注：nochanges: 即使我们必须重播日志，也不会发出任何写入操作
+	// 备注：read_only: 只读模式
 #undef x
 };
 
@@ -631,6 +639,7 @@ do {									\
 	(_opts)._name = _v;						\
 } while (0)
 
+// 备注：初始化的文件系统选项 
 static inline struct bch_opts bch2_opts_empty(void)
 {
 	return (struct bch_opts) { 0 };

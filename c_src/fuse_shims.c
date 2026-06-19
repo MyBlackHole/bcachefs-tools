@@ -1,3 +1,18 @@
+// ============================================
+// 备注：FUSE mount C shim 实现
+//
+// 备注：实现了 fuse_shims.h 中声明的 C wrapper 函数。
+// 备注：仅在 BCACHEFS_FUSE 编译标志启用时编译。
+// 备注：绕过了 bindgen 的限制：static inline 函数、btree_trans 事务、
+// 备注：closures、bio I/O 等复杂类型。
+//
+// 备注：这里所有的函数名都以 rust_fuse_ 为前缀，从 Rust 的
+// 备注：src/commands/fusemount.rs 中通过 FFI 调用。
+//
+// 备注：每个文件操作函数都返回标准 errno 错误码（或其负值），
+// 备注：由 Rust 端转换为 Result。
+// ============================================
+//
 // SPDX-License-Identifier: GPL-2.0
 //
 // C shims for the Rust FUSE mount command. Wraps inline kernel functions

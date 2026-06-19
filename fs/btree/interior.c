@@ -1602,6 +1602,7 @@ err:
 
 /* Btree root updates: */
 
+// 备注：更新根节点
 static void bch2_btree_set_root_inmem(struct bch_fs *c, struct btree *b)
 {
 	/*
@@ -1614,6 +1615,7 @@ static void bch2_btree_set_root_inmem(struct bch_fs *c, struct btree *b)
 		set_btree_node_permanent(b);
 
 	scoped_guard(mutex, &c->btree.cache.root_lock) {
+		// 备注：设置新的 btree_id 根节点
 		bch2_btree_id_root(c, b->c.btree_id)->b = b;
 		if (likely(b->c.btree_id < BTREE_ID_NR))
 			WRITE_ONCE(c->btree.cache.roots_b[b->c.btree_id],
@@ -3620,11 +3622,14 @@ int bch2_btree_node_update_key(struct btree_trans *trans, struct btree_iter *ite
 }
 
 /* Init code: */
+// 备注：初始化代码
 
 /*
  * Only for filesystem bringup, when first reading the btree roots or allocating
  * btree roots when initializing a new filesystem:
  */
+// 备注：仅适用于文件系统启动，
+// 备注：在初始化新文件系统时首次读取 btree 根或分配 btree 根时：
 void bch2_btree_set_root_for_read(struct bch_fs *c, struct btree *b)
 {
 	BUG_ON(btree_node_root(c, b));
@@ -3632,6 +3637,9 @@ void bch2_btree_set_root_for_read(struct bch_fs *c, struct btree *b)
 	bch2_btree_set_root_inmem(c, b);
 }
 
+// 备注：分配假 btree 根
+// 备注：因为 btree alloc 树还没有初始化
+// 备注：此用于初始化这个状态处理
 int bch2_btree_root_alloc_fake_trans(struct btree_trans *trans, enum btree_id id, unsigned level)
 {
 	struct bch_fs *c = trans->c;
@@ -3645,6 +3653,7 @@ int bch2_btree_root_alloc_fake_trans(struct btree_trans *trans, enum btree_id id
 		closure_sync(&cl);
 	} while (ret);
 
+	// 备注：分配内存节点
 	b = bch2_btree_node_mem_alloc(trans, false);
 	bch2_btree_cache_cannibalize_unlock(trans);
 
@@ -3652,12 +3661,16 @@ int bch2_btree_root_alloc_fake_trans(struct btree_trans *trans, enum btree_id id
 	if (ret)
 		return ret;
 
+	// 备注：设置为假 btree 节点
 	set_btree_node_fake(b);
+	// 备注：设置为需要重写
 	set_btree_node_need_rewrite(b);
 	b->c.level	= level;
 	b->c.btree_id	= id;
 
+	// 备注：初始化 btree ptr 键
 	bkey_btree_ptr_init(&b->key);
+	// 备注：设置 key、value
 	b->key.k.p = SPOS_MAX;
 	*((u64 *) bkey_i_to_btree_ptr(&b->key)->v.start) = U64_MAX - id;
 
@@ -3665,6 +3678,7 @@ int bch2_btree_root_alloc_fake_trans(struct btree_trans *trans, enum btree_id id
 	bch2_btree_build_aux_trees(b);
 
 	b->data->flags = 0;
+	// 备注：设置 btree 节点的最小最大值
 	btree_set_min(b, POS_MIN);
 	btree_set_max(b, SPOS_MAX);
 	b->data->format = bch2_btree_calc_format(b);
@@ -3673,6 +3687,7 @@ int bch2_btree_root_alloc_fake_trans(struct btree_trans *trans, enum btree_id id
 	ret = bch2_btree_node_transition_state(&c->btree.cache, b, btree_node_live_state(b));
 	BUG_ON(ret);
 
+	// 备注：设置为假 btree 根
 	bch2_btree_set_root_inmem(c, b);
 
 	six_unlock_write(&b->c.lock);
@@ -3680,6 +3695,7 @@ int bch2_btree_root_alloc_fake_trans(struct btree_trans *trans, enum btree_id id
 	return 0;
 }
 
+// 备注：设置假 btree 根
 void bch2_btree_root_alloc_fake(struct bch_fs *c, enum btree_id id, unsigned level)
 {
 	CLASS(btree_trans, trans)(c);

@@ -18,6 +18,8 @@
  * This synthesizes deleted extents for holes, similar to BTREE_ITER_slots for
  * extents style btrees, but works on non-extents btrees:
  */
+// 备注：这会合成空洞的已删除范围，
+// 备注：类似于范围样式 btree 的 BTREE_ITER_SLOTS，但适用于非范围 btree：
 static struct bkey_s_c bch2_get_key_or_hole(struct btree_iter *iter, struct bpos end, struct bkey *hole)
 {
 	struct bkey_s_c k = bch2_btree_iter_peek_slot(iter);
@@ -491,6 +493,8 @@ static int bch2_check_freespace_key(struct btree_trans *trans, struct btree_iter
  * valid for buckets that exist; this just checks for keys for nonexistent
  * buckets.
  */
+// 备注：我们已经检查过 bucket_gens btree 中的代号对于存在的 bucket 是否有效；
+// 备注：这只会检查不存在的 bucket 的键。
 static noinline_for_stack
 int bch2_check_bucket_gens_key(struct btree_trans *trans,
 			       struct btree_iter *iter,
@@ -758,6 +762,7 @@ static int dev_freespace_init_iter(struct btree_trans *trans, struct bch_dev *ca
 		 * We process live keys in the alloc btree one at a
 		 * time:
 		 */
+		// 备注：我们一次处理一个分配 B 树中的活动键：
 		struct bch_alloc_v4 a_convert;
 		const struct bch_alloc_v4 *a = bch2_alloc_to_v4(k, &a_convert);
 
@@ -782,16 +787,21 @@ static int dev_freespace_init_iter(struct btree_trans *trans, struct bch_dev *ca
 	return 0;
 }
 
+// 备注：设备空闲空间初始化
 int bch2_dev_freespace_init(struct bch_fs *c, struct bch_dev *ca,
 			    u64 bucket_start, u64 bucket_end)
 {
+	// 备注：设备空间初始化完成标志
 	struct bpos end = POS(ca->dev_idx, bucket_end);
 	unsigned long last_updated = jiffies;
 
 	BUG_ON(bucket_start > bucket_end);
 	BUG_ON(bucket_end > ca->mi.nbuckets);
 
+	// 备注：获取事务对象
 	CLASS(btree_trans, trans)(c);
+	// 备注：初始化迭代器
+	// 备注：从 bucket_start(first_bucket) 开始迭代
 	CLASS(btree_iter, iter)(trans, BTREE_ID_alloc,
 		POS(ca->dev_idx, max_t(u64, ca->mi.first_bucket, bucket_start)),
 		BTREE_ITER_prefetch);
@@ -799,6 +809,9 @@ int bch2_dev_freespace_init(struct bch_fs *c, struct bch_dev *ca,
 	 * Scan the alloc btree for every bucket on @ca, and add buckets to the
 	 * freespace/need_discard/need_gc_gens btrees as needed:
 	 */
+	// 备注：扫描 ca 上每个桶的分配树
+	// 备注：并根据需要将存储桶添加到
+	// 备注：freespace/need_discard/need_gc_gens btree
 	while (bkey_lt(iter.pos, end)) {
 		if (time_after(jiffies, last_updated + HZ * 10)) {
 			bch_info_dev(ca, "%s: currently at %llu/%llu",
@@ -813,12 +826,15 @@ int bch2_dev_freespace_init(struct bch_fs *c, struct bch_dev *ca,
 		guard(mutex)(&c->sb_lock);
 		guard(memalloc_flags)(PF_MEMALLOC_NOFS);
 		struct bch_member *m = bch2_members_v2_get_mut(c->disk_sb.sb, ca->dev_idx);
+		// 备注：标记设备空间初始化完成
+		// 备注：freespace_initialized = true
 		SET_BCH_MEMBER_FREESPACE_INITIALIZED(m, true);
 	}
 
 	return 0;
 }
 
+// 备注：初始化文件系统空闲空间
 int bch2_fs_freespace_init(struct bch_fs *c)
 {
 	if (c->sb.features & BIT_ULL(BCH_FEATURE_small_image))
@@ -828,6 +844,8 @@ int bch2_fs_freespace_init(struct bch_fs *c)
 	 * We can crash during the device add path, so we need to check this on
 	 * every mount:
 	 */
+	// 备注：我们可能会在设备添加路径期间崩溃，
+	// 备注：因此我们需要在每次安装时检查这一点：
 
 	bool doing_init = false;
 	for_each_member_device(c, ca) {
@@ -839,6 +857,8 @@ int bch2_fs_freespace_init(struct bch_fs *c)
 			doing_init = true;
 		}
 
+		// 备注：设备空间初始化
+		// 备注：从 0 ~ ca->mi.nbuckets 范围内初始化设备空间
 		try(bch2_dev_freespace_init(c, ca, 0, ca->mi.nbuckets));
 	}
 

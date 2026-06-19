@@ -505,6 +505,9 @@ void bch2_btree_node_sort(struct bch_fs *c, struct btree *b,
 		 * buffer, we can just swap buffers instead of doing a big
 		 * memcpy()
 		 */
+		// 备注：我们的临时缓冲区与 Btree 节点的缓冲区大小相同，
+		// 备注：我们可以交换缓冲区，
+		// 备注：而不必执行大的 memcpy()
 		*out = *b->data;
 		out->keys.u64s = cpu_to_le16(u64s);
 		swap(out, b->data);

@@ -610,6 +610,7 @@ __cold void bch2_pd_controller_debug_to_text(struct printbuf *out, struct bch_pd
 
 /* misc: */
 
+// 备注：映射 page 到 bio_vec 
 void bch2_bio_map(struct bio *bio, void *base, size_t size)
 {
 	if (is_vmalloc_addr(base))
@@ -749,6 +750,7 @@ u64 bch2_get_random_u64_below(u64 ceil)
 	return mul_u64_u64_shr(ceil, rand, 64);
 }
 
+// 备注：移动 src 的 dst_iter.bi_size 到 dst 
 void memcpy_to_bio(struct bio *dst, struct bvec_iter dst_iter, const void *src)
 {
 	struct bio_vec bv;
@@ -756,6 +758,7 @@ void memcpy_to_bio(struct bio *dst, struct bvec_iter dst_iter, const void *src)
 
 	__bio_for_each_segment(bv, dst, iter, dst_iter) {
 		void *dstp = bvec_kmap_local(&bv);
+		// 备注：移动数据 
 		memcpy(dstp, src, bv.bv_len);
 		kunmap_local(dstp);
 
@@ -763,6 +766,7 @@ void memcpy_to_bio(struct bio *dst, struct bvec_iter dst_iter, const void *src)
 	}
 }
 
+// 备注：bio 数据到 dst 
 void memcpy_from_bio(void *dst, struct bio *src, struct bvec_iter src_iter)
 {
 	struct bio_vec bv;
@@ -1183,6 +1187,7 @@ u64 *bch2_acc_percpu_u64s(u64 __percpu *p, unsigned nr)
 	return ret;
 }
 
+// 备注：解析切分 devs 
 int bch2_split_devs(const char *_dev_name, darray_const_str *ret)
 {
 	darray_init(ret);

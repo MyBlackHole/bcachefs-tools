@@ -877,6 +877,7 @@ fsck_err:
 	return ret;
 }
 
+// 备注：异步读取工作例程
 static void btree_node_read_work(struct work_struct *work)
 {
 	struct btree_read_bio *rb =
@@ -1020,6 +1021,7 @@ __cold void bch2_btree_read_bio_to_text(struct printbuf *out, struct btree_read_
 	bch2_bio_to_text(out, &rbio->bio);
 }
 
+// 备注：读取物理磁盘节点处理例程
 void bch2_btree_node_read(struct btree_trans *trans, struct btree *b,
 			  bool sync)
 {
@@ -1066,9 +1068,11 @@ void bch2_btree_node_read(struct btree_trans *trans, struct btree *b,
 	rb->b			= b;
 	rb->start_time		= local_clock();
 	rb->pick		= pick;
+	// 备注：设置工作处理函数
 	INIT_WORK(&rb->work, btree_node_read_work);
 	bio->bi_iter.bi_sector	= pick.ptr.offset;
 	bio->bi_end_io		= btree_node_read_endio;
+	// 备注：映射 bio 到物理内存
 	bch2_bio_map(bio, b->data, btree_buf_bytes(b));
 
 	async_object_list_add(c, btree_read_bio, rb, &rb->list_idx);
@@ -1076,9 +1080,11 @@ void bch2_btree_node_read(struct btree_trans *trans, struct btree *b,
 	if (rb->ca) {
 		this_cpu_add(ca->io_done->sectors[READ][BCH_DATA_btree],
 			     bio_sectors(bio));
+		// 备注：设置 bio 设备目标
 		bio_set_dev(bio, ca->disk_sb.bdev);
 
 		if (sync) {
+			// 备注：同步模式下，直接提交IO请求, 并等待IO完成
 			submit_bio_wait(bio);
 			bch2_latency_acct(ca, rb->start_time, READ);
 			btree_node_read_work(&rb->work);
@@ -1091,6 +1097,7 @@ void bch2_btree_node_read(struct btree_trans *trans, struct btree *b,
 		if (sync)
 			btree_node_read_work(&rb->work);
 		else
+			// 备注：放入 IO 完成队列异步处理
 			queue_work(c->btree.read_complete_wq, &rb->work);
 	}
 }

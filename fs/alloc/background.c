@@ -1027,6 +1027,7 @@ int bch2_bucket_gens_init(struct bch_fs *c)
 	return 0;
 }
 
+// 备注：读取并初始化所有桶的 generation 号
 int bch2_alloc_read(struct bch_fs *c)
 {
 	guard(rwsem_read)(&c->state_lock);
@@ -1096,6 +1097,7 @@ int bch2_alloc_read(struct bch_fs *c)
 }
 
 /* Free space/discard btree: */
+// 备注：释放空间/丢弃btree
 
 int bch2_bucket_do_freespace_index(struct btree_trans *trans,
 				   struct bch_dev *ca,
@@ -1224,6 +1226,9 @@ static noinline int inval_bucket_key(struct btree_trans *trans, struct bkey_s_c 
 #define statechange_from(expr)		(eval_state(old_a, expr) && !eval_state(new_a, expr))
 #define statechange(expr)		(eval_state(old_a, expr) != eval_state(new_a, expr))
 
+// 备注：桶分配触发器
+// 备注：处理桶分配和状态变更
+// 备注：当分配键发生变更时被调用
 int bch2_trigger_alloc(struct btree_trans *trans, struct btree_trigger_op op)
 {
 	struct bch_fs *c = trans->c;
@@ -1473,6 +1478,7 @@ fsck_err:
 }
 
 /* device removal */
+// 备注：设备删除
 
 static int bch2_dev_remove_need_discard(struct bch_fs *c, struct bch_dev *ca)
 {

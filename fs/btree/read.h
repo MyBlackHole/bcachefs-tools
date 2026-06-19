@@ -69,6 +69,7 @@ static inline struct nonce btree_nonce(struct bset *i, unsigned offset)
 	}};
 }
 
+// 备注：加密 
 static inline int bset_encrypt(struct bch_fs *c, struct bset *i, unsigned offset)
 {
 	struct nonce nonce = btree_nonce(i, offset);

@@ -323,6 +323,51 @@ err:
 	return stripe_frag_ratio && stripe_frag_ratio * 2 < bucket_frag_ratio;
 }
 
+// 备注：============================================================================
+// 备注：bch2_copygc() - 垃圾回收主函数
+// 备注：============================================================================
+// 备注：
+// 备注：【功能定位】
+// 备注：
+// 备注：这是bcachefs垃圾回收(CopyGC)的核心函数，负责将碎片化或待回收的bucket中的
+// 备注：有效数据迁移到新的位置，从而回收空间、减少碎片、优化布局。
+// 备注：
+// 备注：【GC触发条件】
+// 备注：
+// 备注：1. 可用空间不足：设备空闲bucket低于阈值（默认20%）
+// 备注：2. 碎片化严重：可移动数据的碎片量超过阈值
+// 备注：3. 需要回收：bucket被标记为需要GC（如generations已满）
+// 备注：
+// 备注：【GC流程】
+// 备注：
+// 备注：1. 等待正在进行的bucket移动完成
+// 备注：2. 尝试刷写B树写缓冲区
+// 备注：3. 选择待回收的bucket：
+// 备注：- 如启用EC，选择EC条带bucket
+// 备注：- 否则选择普通数据bucket
+// 备注：4. 遍历待回收bucket，逐个 evacuate：
+// 备注：- 读取bucket中的有效extent
+// 备注：- 写入新位置
+// 备注：- 更新索引
+// 备注：5. 统计GC效果
+// 备注：
+// 备注：【数据迁移策略】
+// 备注：
+// 备注：- 优先回收碎片化高的bucket
+// 备注：- 考虑数据类型（可移动/不可移动）
+// 备注：- 保留足够的空闲空间作为缓冲
+// 备注：- 支持后台渐进式GC
+// 备注：
+// 备注：【参数说明】
+// 备注：
+// 备注：@ctxt: 移动上下文，包含事务、统计信息等
+// 备注：@buckets_in_flight: 正在处理的bucket集合
+// 备注：@did_work: 输出参数，标记是否实际执行了工作
+// 备注：
+// 备注：【返回值】
+// 备注：
+// 备注：- 0: 成功完成或没有工作需要做
+// 备注：- 负值: 错误码
 noinline
 static int bch2_copygc(struct moving_context *ctxt,
 		       struct buckets_in_flight *buckets_in_flight,
@@ -330,16 +375,22 @@ static int bch2_copygc(struct moving_context *ctxt,
 {
 	struct btree_trans *trans = ctxt->trans;
 	struct bch_fs *c = trans->c;
+
+	// 备注：初始化数据更新选项，标记为CopyGC类型
 	struct data_update_opts data_opts = {
 		.type		= BCH_DATA_UPDATE_copygc,
 		.commit_flags	= (unsigned) BCH_WATERMARK_copygc,
 	};
+
+	// 备注：记录GC开始时的统计值，用于计算增量
 	u64 sectors_seen	= atomic64_read(&ctxt->stats->sectors_seen);
 	u64 sectors_moved	= atomic64_read(&ctxt->stats->sectors_moved);
 	int ret = 0;
 
+	// 备注：等待正在进行的bucket移动完成，避免并发冲突
 	move_buckets_wait(ctxt, buckets_in_flight, false);
 
+	// 备注：尝试刷写B树写缓冲区，确保元数据一致性
 	ret = bch2_btree_write_buffer_tryflush(trans);
 	if (bch2_err_matches(ret, EROFS))
 		goto err;
@@ -347,25 +398,34 @@ static int bch2_copygc(struct moving_context *ctxt,
 	if (bch2_fs_fatal_err_on(ret, c, "%s: from bch2_btree_write_buffer_tryflush()", bch2_err_str(ret)))
 		goto err;
 
+	// 备注：选择待回收的bucket
+	// 备注：如启用纠删码且需要回收EC条带，使用EC GC路径
+	// 备注：否则使用普通bucket GC路径
 	ret = should_do_ec_copygc(trans)
 		? bch2_copygc_get_stripe_buckets(ctxt, buckets_in_flight)
 		: bch2_copygc_get_buckets(ctxt, buckets_in_flight);
 	if (ret)
 		goto err;
 
+	// 备注：遍历所有待回收的bucket，逐个执行evacuate
+	// 备注：evacuate过程：读取有效数据 → 写入新位置 → 更新索引
 	darray_for_each(buckets_in_flight->to_evacuate, i) {
+		// 备注：检查是否应停止（如文件系统卸载或线程冻结）
 		if (kthread_should_stop() || freezing(current))
 			break;
 
 		struct move_bucket *b = *i;
 		*i = NULL;
 
+		// 备注：将bucket标记为正在处理，防止并发访问
 		move_bucket_in_flight_add(buckets_in_flight, b);
 
+		// 备注：执行bucket evacuate，迁移有效数据
 		ret = bch2_evacuate_bucket(ctxt, b, b->k.bucket, b->k.gen, data_opts);
 		if (ret)
 			goto err;
 
+		// 备注：标记实际执行了工作
 		*did_work = true;
 	}
 err:
@@ -502,6 +562,7 @@ __cold void bch2_copygc_wait_to_text(struct printbuf *out, struct bch_fs *c)
 	}
 }
 
+// 备注：copygc 处理例程
 static int bch2_copygc_thread(void *arg)
 {
 	struct bch_fs *c = arg;
@@ -599,24 +660,31 @@ err:
 	return ret;
 }
 
+// 备注：关闭释放 copygc 线程
 void bch2_copygc_stop(struct bch_fs *c)
 {
 	struct task_struct *t = rcu_dereference_protected(c->copygc.thread, true);
 	if (t) {
+		// 备注：关闭 copygc 线程
 		kthread_stop(t);
 		put_task_struct(t);
 	}
 	c->copygc.thread = NULL;
 }
 
+// 备注：启动 copygc 线程
 int bch2_copygc_start(struct bch_fs *c)
 {
 	if (c->opts.nochanges)
+		// 备注：如果禁止了写操作，
+		// 备注：则不启动 copygc 线程
 		return 0;
 
 	if (bch2_fs_init_fault("copygc_start"))
 		return -ENOMEM;
 
+	// 备注：例如: bch-copygc/nvme0n1p2
+	// 备注：创建 copygc 线程
 	if (!c->copygc.wq &&
 	    !(c->copygc.wq = alloc_workqueue("bcachefs_copygc",
 				WQ_HIGHPRI|WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_CPU_INTENSIVE, 1)))
@@ -632,8 +700,10 @@ int bch2_copygc_start(struct bch_fs *c)
 
 		get_task_struct(t);
 
+		// 备注：记录 copygc 线程
 		c->copygc.thread = t;
 		rcu_assign_pointer(c->copygc.thread, t);
+		// 备注：唤醒 copygc 线程
 		wake_up_process(c->copygc.thread);
 	}
 

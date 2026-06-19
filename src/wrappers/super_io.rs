@@ -1,3 +1,17 @@
+// ============================================
+// 备注：Superblock 磁盘读写（纯 Rust 实现）
+//
+// 备注：bch2_super_write() — 将 superblock 写入磁盘的所有布局位置。
+// 备注：布局（layout）描述了 superblock 的多个副本在设备上的偏移，
+// 备注：通常在设备头部有 2 个副本用于冗余。
+//
+// 备注：bch2_super_read() — 从设备读取 superblock。
+// 备注：会尝试所有布局位置，校验 checksum，使用第一个有效的。
+//
+// 备注：这个模块存在的意义：C 端的 bch2_super_write/read 在 rust_shims
+// 备注：中因不能正确处理 Rust 分配的内存（&[u8] → C），所以在纯 Rust 中重写。
+// ============================================
+//
 // SPDX-License-Identifier: GPL-2.0
 
 //! Rust implementations of superblock read/write operations.
@@ -222,3 +236,4 @@ pub fn sb_layout_init(
 
     Ok(())
 }
+

@@ -798,6 +798,25 @@ static inline void journal_res_unblocked(struct bch_fs *c)
 	track_event_change(&c->times[BCH_TIME_blocked_journal_stuck],		false);
 }
 
+// 备注：journal 预留的慢路径 —— fast path 失败后的 fallback。
+// 备注：
+// 备注：何时进入慢路径:
+// 备注：  1) cur_entry_offset + u64s > cur_entry_u64s → 当前 buf 满了
+// 备注：  2) watermark 不足 → 被高优预留阻塞
+// 备注：  3) refcount 溢出 → journal 已被太多人引用
+// 备注：
+// 备注：慢路径做的事:
+// 备注：  1) 加 pin_resize_lock(percpu rwsem) + spinlock(j->lock)
+// 备注：  2) 尝试 journal_entry_close() 关闭当前 entry 并打开新的
+// 备注：     这会把当前 buf 的内容刷盘（由另一个异步路径处理）
+// 备注：  3) 如果仍不行，返回 -BCH_ERR_journal_retry_open 让外层重试
+// 备注：     外层会走到 journal_res_get_slowpath() 并阻塞等待
+// 备注：
+// 备注：整体预留流程:
+// 备注：  bch2_journal_res_get()
+// 备注：    ├─ journal_res_get_fast()     ← 无锁 cas 快速获取
+// 备注：    ├─ __journal_res_get()        ← 加锁 + close/cycle
+// 备注：    └─ bch2_journal_res_get_slowpath() ← 阻塞等待 + direct reclaim
 static int __journal_res_get(struct journal *j, struct journal_res *res,
 			     unsigned flags)
 {
@@ -1129,6 +1148,12 @@ static noinline void journal_flush_seq_err_wake(struct closure_waitlist *wait)
  * Like bch2_journal_wait_on_seq, except that it triggers a write immediately if
  * necessary
  */
+// 备注： 等待写入日志条目
+// 备注： j: 日志对象
+// 备注： seq: 顺序刷新
+// 备注： parent: 等待的闭包对象
+// 备注： return:
+// 备注：	seq 被刷新则返回 1, 正在刷新则返回 0, -EIO seq 永远不会被刷新
 int bch2_journal_flush_seq_async(struct journal *j, u64 seq, struct closure *cl)
 {
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);

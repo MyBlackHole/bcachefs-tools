@@ -1,3 +1,16 @@
+// ============================================
+// 备注：bcachefs 用户空间工具函数
+//
+// 备注：提供用户空间代码所需的基础工具：
+// 备注：  die() — 带 printf 风格格式的错误终止函数
+// 备注：  xmalloc, xopenat, xioctl, xclose — 致命失败版本的封装
+// 备注：  read_file_str/u64 — 从 sysfs 读取属性
+// 备注：  blkid_check — 检查设备是否被 blkid 标记
+// 备注：  ask_yn — 交互式确认
+// 备注：  crc32c — CRC32C 校验和（避免与 libblkid 冲突）
+//
+// 备注：所有 x* 宏在操作失败时都会 die() 退出，保持 C 代码简洁。
+// ============================================
 #ifndef _TOOLS_UTIL_H
 #define _TOOLS_UTIL_H
 

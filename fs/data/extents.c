@@ -139,6 +139,7 @@ static inline int dev_failed(struct bch_dev *ca)
 /*
  * returns true if p1 is better than p2:
  */
+// 备注：如果 p1 优于 p2，则返回 true：
 static inline bool ptr_better(struct bch_fs *c,
 			      const struct extent_ptr_decoded p1,
 			      u64 p1_latency,
@@ -195,6 +196,9 @@ static inline bool ptr_better(struct bch_fs *c,
  * Avoid can be NULL, meaning pick any. If there are no non-stale pointers to
  * other devices, it will still pick a pointer from avoid.
  */
+// 备注：这会选择一个非陈旧的指针，最好来自 @avoid 以外的设备。
+// 备注：avoid 可以为 NULL，意味着选择任何一个。
+// 备注：如果没有指向其他设备的非陈旧指针，它仍然会从 avoid 选择一个指针。
 int bch2_bkey_pick_read_device(struct bch_fs *c, struct bkey_s_c k,
 			       struct bch_io_failures *failed,
 			       struct extent_ptr_decoded *pick,
@@ -226,6 +230,7 @@ int bch2_bkey_pick_read_device(struct bch_fs *c, struct bkey_s_c k,
 		}
 
 		/* Are we being asked to read from a specific device? */
+		// 备注：我们是否被要求从特定设备读取
 		if ((flags & BCH_READ_hard_require_read_device) &&
 		    p.ptr.dev != preferred_dev)
 			continue;

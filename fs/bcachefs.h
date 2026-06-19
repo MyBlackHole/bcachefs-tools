@@ -475,6 +475,7 @@ struct bucket_bitmap {
 	struct mutex		lock;
 };
 
+// 备注：文件系统内部设备描述
 struct bch_dev {
 	struct kobject		kobj;
 #ifdef CONFIG_BCACHEFS_DEBUG
@@ -484,6 +485,7 @@ struct bch_dev {
 #else
 	struct percpu_ref	ref;
 #endif
+	// 备注：读写完成量
 	struct completion	ref_completion;
 	/*
 	 * ref_outer keeps the bch_dev allocation alive - nothing more.
@@ -500,8 +502,11 @@ struct bch_dev {
 	struct completion	ref_outer_completion;
 	struct enumerated_ref	io_ref[2];
 
+	// 备注：关联的文件系统信息
 	struct bch_fs		*fs;
 
+	// 备注：设备 id
+	// 备注：struct bch_sb_field 的索引位置
 	u8			dev_idx;
 	/*
 	 * Device is being removed and its alloc info and stripe pointers are
@@ -523,6 +528,7 @@ struct bch_dev {
 	__uuid_t		uuid;
 	char			name[BDEVNAME_SIZE];
 
+	// 备注：设备信息
 	struct bch_sb_handle	disk_sb;
 	struct bch_sb		*sb_read_scratch;
 	int			sb_write_error;
@@ -536,6 +542,10 @@ struct bch_dev {
 	 * Per-bucket arrays are protected by either rcu_read_lock or
 	 * state_lock, for device resize.
 	 */
+	// 备注：桶：
+	// 备注：每个存储桶数组均受 c->mark_lock、bucket_lock 和 gc_lock 保护，
+	// 备注：用于设备调整大小 - 持有任何内容就足以进行访问：
+	// 备注：或 rcu_read_lock()，但仅适用于 ptr_stale()：
 	GENRADIX(struct bucket)	buckets_gc;
 	struct bucket_gens __rcu *bucket_gens;
 	u8			*oldest_gen;
@@ -544,6 +554,7 @@ struct bch_dev {
 	struct bucket_bitmap	bucket_backpointer_mismatch;
 	struct bucket_bitmap	bucket_backpointer_empty;
 
+	// 备注：记录设备桶的分配情况
 	struct bch_dev_usage_full __percpu
 				*usage;
 
@@ -559,6 +570,7 @@ struct bch_dev {
 	 */
 	atomic_t		alloc_wake_counter;
 
+	// 备注：打开的存储桶数量
 	unsigned		nr_open_buckets;
 	unsigned		nr_partial_buckets;
 	unsigned		nr_btree_reserve;
@@ -571,12 +583,15 @@ struct bch_dev {
 
 	atomic64_t		rebalance_work;
 
+	// 备注：日志设备
 	struct journal_device	journal;
 	u64			prev_journal_sector;
 
+	// 备注：io 异常 work
 	struct work_struct	io_error_work;
 
 	/* The rest of this all shows up in sysfs */
+	// 备注：其余部分都显示在 sysfs 中
 	atomic64_t		cur_latency[2];
 	struct bch2_time_stats_quantiles io_latency[2];
 
@@ -623,9 +638,13 @@ struct bch_dev {
 	x(discard_mount_opt_set)	\
 	x(sb_dirty)			\
 
+// 备注：文件系统状态标志
 enum bch_fs_flags {
 #define x(n)		BCH_FS_##n,
 	BCH_FS_FLAGS()
+	// 备注：BCH_FS_started: 已启动
+	// 备注：BCH_FS_btree_running: 运行中
+	// 备注：BCH_FS_new_fs: 新文件系统
 #undef x
 };
 
@@ -644,6 +663,7 @@ struct journal_seq_blacklist_table {
 	}			entries[];
 };
 
+// 备注：根子卷的定义
 #define BCH_WRITE_REFS()						\
 	x(journal)							\
 	x(trans)							\
@@ -679,6 +699,7 @@ enum bch_write_ref {
 
 #define BCH_FS_DEFAULT_UTF8_ENCODING UNICODE_AGE(12, 1, 0)
 
+// 备注：文件系统表达结构
 struct bch_fs {
 	struct closure		cl;
 
@@ -689,6 +710,7 @@ struct bch_fs {
 	struct kobject		opts_dir;
 	struct kobject		time_stats;
 	struct kobject		time_stats_json;
+	// 备注：状态标志
 	unsigned long		flags;
 
 	int			minor;
@@ -708,6 +730,7 @@ struct bch_fs {
 	struct task_struct	*recovery_task;
 
 	/* ro/rw, add/remove/resize devices: */
+	// 备注：ro/rw，添加/删除/调整设备大小：
 	struct rw_semaphore	state_lock;
 
 	/* Counts outstanding writes, for clean transition to read-only */
@@ -721,6 +744,7 @@ struct bch_fs {
 	wait_queue_head_t	ro_ref_wait;
 	struct work_struct	read_only_work;
 
+	// 备注：设备信息数组
 	struct bch_dev __rcu	*devs[BCH_SB_MEMBERS_MAX];
 	struct bch_devs_mask	devs_online;
 	struct bch_devs_mask	devs_removed;
@@ -738,6 +762,7 @@ struct bch_fs {
 	unsigned long		incompat_versions_requested[BITS_TO_LONGS(BCH_VERSION_MINOR(bcachefs_metadata_version_current))];
 	struct unicode_map	*cf_encoding;
 
+	// 备注：block_size 对数 ilog2(block_size)
 	unsigned short		block_bits;	/* ilog2(block_size) */
 
 	/*
@@ -877,6 +902,7 @@ static inline unsigned bucket_bytes(const struct bch_dev *ca)
 	return ca->mi.bucket_size << 9;
 }
 
+// 备注：块大小
 static inline unsigned block_bytes(const struct bch_fs *c)
 {
 	return c->opts.block_size;

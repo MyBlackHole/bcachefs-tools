@@ -1,4 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0
+// ============================================
+// 备注：Rust/C 桥接 Shims — 实现
+//
+// 备注：本文件实现了 rust_shims.h 中声明的所有 C wrapper 函数。
+// 备注：这些函数调用 bcachefs 内核内部函数（static inline / 宏），
+// 备注：将其封装为常规 C 函数供 Rust 通过 FFI 调用。
+//
+// 备注：实现的 shim 类型：
+// 备注：  rust_csum_vstruct_sb():  计算 superblock 校验和
+// 备注：  strip_fs_alloc():        从 clean fs 中移除 alloc info
+// 备注：  rust_collect_journal_entries(): 收集日志回放入口
+// 备注：  rust_get_next_online_dev():     在线设备遍历
+// 备注：  rust_write_submit():     异步写提交
+// 备注：  rust_read_submit():      异步读提交
+// 备注：  rust_link_data():        数据迁移 extent 构造
+// 备注：  rust_accounting_mem_read(): 记账读取
+// 备注：  rust_set_bit():          原子位设置
+// 备注：  rust_jset_decrypt():     jset 解密
+// 备注：  rust_bset_decrypt():     bset 解密
+// ============================================
 
 #include <errno.h>
 #include <fcntl.h>

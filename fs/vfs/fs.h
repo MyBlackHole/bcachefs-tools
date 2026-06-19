@@ -75,9 +75,11 @@ struct bch_inode_info {
 	 * incremented when we isusue a cache flush, and track here the sequence
 	 * number that needs flushing.
 	 */
+	// 备注：当我们进行 nocow 写入时，我们需要向底层块设备发出刷新
 	struct bch_devs_mask	ei_devs_need_flush;
 
 	/* copy of inode in btree: */
+	// 备注：btree 中 inode 的副本:
 	struct bch_inode_unpacked ei_inode;
 
 	struct delayed_work	ei_writeback_timer;
@@ -161,6 +163,7 @@ do {									\
 		}							\
 } while (0)
 
+// 备注：获取索引的文件系统表示
 static inline struct bch_inode_info *file_bch_inode(struct file *file)
 {
 	return to_bch_ei(file_inode(file));

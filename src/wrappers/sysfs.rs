@@ -1,3 +1,13 @@
+// ============================================
+// 备注：sysfs 属性读取工具
+//
+// 备注：bcachefs 内核模块在 /sys/fs/bcachefs/<UUID>/ 下导出文件系统状态：
+// 备注：  dev-0/block → "sda"（指向实际设备名的符号链接）
+// 备注：  options/     → 各种运行时选项
+// 备注：  ...          → 其他状态属性
+//
+// 备注：本模块提供纯 Rust 的 sysfs 读取接口，无需调用 C 的 sysfs 辅助函数。
+// ============================================
 use std::fs;
 use std::io::{self, BufRead};
 use std::os::fd::BorrowedFd;
@@ -142,3 +152,4 @@ pub fn fs_get_devices(sysfs_path: &Path) -> Result<Vec<DevInfo>> {
     devs.sort_by_key(|d| d.idx);
     Ok(devs)
 }
+

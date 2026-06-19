@@ -42,6 +42,7 @@ static CLOSURE_CALLBACK(bch2_dio_read_complete)
 	bio_check_or_release(&dio->rbio.bio, dio->should_dirty);
 }
 
+// 备注：io 读结束回调
 static void bch2_direct_IO_read_endio(struct bio *bio)
 {
 	struct bch_read_bio *rbio = to_rbio(bio);
@@ -62,6 +63,7 @@ static void bch2_direct_IO_read_split_endio(struct bio *bio)
 	bio_check_or_release(bio, should_dirty);
 }
 
+// 备注：直接 io 读取
 static int __bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 				enum bch_read_flags flags,
 				struct bch_read_err_report *err_report)
@@ -81,9 +83,11 @@ static int __bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 	bch2_inode_opts_get_inode(c, &inode->ei_inode, &opts);
 
 	/* bios must be 512 byte aligned: */
+	// 备注：BIOS 必须是 512 字节对齐:
 	if ((offset|iter->count) & (SECTOR_SIZE - 1))
 		return bch_err_throw(c, EINVAL_unaligned_io);
 
+	// 备注：获取最小需要读
 	ret = min_t(loff_t, iter->count,
 		    max_t(loff_t, 0, i_size_read(&inode->v) - offset));
 
@@ -95,6 +99,7 @@ static int __bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 		shorten = 0;
 	iter->count -= shorten;
 
+	// 备注：分配 bio
 	bio = bio_alloc_bioset(NULL,
 			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 			       REQ_OP_READ,
@@ -195,10 +200,12 @@ int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 			enum bch_read_flags flags,
 			struct bch_read_err_report *err_report)
 {
+	// 备注：直接 io
 	struct file *file = req->ki_filp;
 	struct address_space *mapping = file->f_mapping;
 
 	if (unlikely(mapping->nrpages)) {
+		// 备注：同步指定范围脏数据
 		ssize_t ret = filemap_write_and_wait_range(mapping,
 					req->ki_pos,
 					req->ki_pos + iov_iter_count(iter) - 1);
@@ -206,8 +213,10 @@ int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter,
 			return ret;
 	}
 
+	// 备注：修改访问时间
 	file_accessed(file);
 
+	// 备注：用于短时内 io 排序
 	struct blk_plug plug;
 	blk_start_plug(&plug);
 	ssize_t ret = __bch2_direct_IO_read(req, iter, flags, err_report);
@@ -223,10 +232,12 @@ ssize_t bch2_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	struct file *file = iocb->ki_filp;
 	ssize_t ret = 0;
 
+	// 备注：希望读取的大小
 	if (!iov_iter_count(iter))
 		return 0; /* skip atime */
 
 	if (iocb->ki_flags & IOCB_DIRECT) {
+		// 备注：直接 io 读
 		ret = bch2_direct_IO_read(iocb, iter, 0, NULL);
 	} else {
 		guard(bch2_pagecache_add)(file_bch_inode(file));
@@ -237,6 +248,7 @@ ssize_t bch2_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 }
 
 /* O_DIRECT writes */
+// 备注：直接写
 
 static bool bch2_check_range_allocated(struct bch_fs *c, subvol_inum inum,
 				       u64 offset, u64 size,
@@ -388,6 +400,7 @@ static void bch2_dio_write_sync_done(struct bch_write_op *op)
 	dio->sync_done = true;
 }
 
+// 备注：循环写逻辑
 static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 {
 	struct bch_fs *c = dio->op.c;
@@ -403,6 +416,7 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 	bch2_inode_opts_get_inode(c, &inode->ei_inode, &opts);
 
 	while (1) {
+		// 备注：读出当前需要写入大小
 		iter_count = dio->iter.count;
 
 		EBUG_ON(faults_disabled_mapping(c));
@@ -436,6 +450,7 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 				continue;
 		}
 
+		// 备注：检查是否页(块)对齐
 		unaligned = bio->bi_iter.bi_size & (block_bytes(c) - 1);
 		bio->bi_iter.bi_size -= unaligned;
 		iov_iter_revert(&dio->iter, unaligned);
@@ -465,7 +480,7 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 		if (dio->flush)
 			dio->op.flags |= BCH_WRITE_flush;
 		dio->op.flags |= BCH_WRITE_check_enospc;
-
+		// 备注：预分配空间
 		ret = bch2_quota_reservation_add(c, inode, &dio->quota_res,
 						 bio_sectors(bio), true);
 		if (unlikely(ret))
@@ -486,6 +501,7 @@ static __always_inline long bch2_dio_write_loop(struct dio_write *dio)
 			dio->sync = sync = true;
 
 		dio->loop = true;
+		// 备注：在闭包中执行 bch2_write
 		closure_call(&dio->op.cl, bch2_write, NULL, NULL);
 
 		if (!sync)
@@ -525,6 +541,7 @@ static noinline __cold void bch2_dio_write_continue(struct dio_write *dio)
 		kthread_unuse_mm(mm);
 }
 
+// 备注：异步写数据
 static void bch2_dio_write_loop_async(struct bch_write_op *op)
 {
 	struct dio_write *dio = container_of(op, struct dio_write, op);
@@ -537,6 +554,7 @@ static void bch2_dio_write_loop_async(struct bch_write_op *op)
 		bch2_dio_write_continue(dio);
 }
 
+// 备注：直接 io 写
 ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 {
 	struct file *file = req->ki_filp;
@@ -558,6 +576,7 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 
 	inode_lock(&inode->v);
 
+	// 备注：校验
 	ret = generic_write_checks(req, iter);
 	if (unlikely(ret <= 0))
 		goto err_put_write_ref;
@@ -575,15 +594,18 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 		goto err_put_write_ref;
 	}
 
+	// 备注：开始直接 io
 	inode_dio_begin(&inode->v);
 	bch2_pagecache_block_get(inode);
 
 	extending = req->ki_pos + iter->count > inode->v.i_size;
 	if (!extending) {
+		// 备注：不是延展不用加锁
 		inode_unlock(&inode->v);
 		locked = false;
 	}
 
+	// 备注：申请 bio
 	bio = bio_alloc_bioset(NULL,
 			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 			       REQ_OP_WRITE | REQ_SYNC | REQ_IDLE,
@@ -612,6 +634,7 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 			goto err_put_bio;
 	}
 
+	// 备注：bio 写循环
 	ret = bch2_dio_write_loop(dio);
 out:
 	if (locked)
@@ -619,7 +642,9 @@ out:
 	return ret;
 err_put_bio:
 	bch2_pagecache_block_put(inode);
+	// 备注：释放 bio
 	bio_put(bio);
+	// 备注：写完了
 	inode_dio_end(&inode->v);
 err_put_write_ref:
 	enumerated_ref_put(&c->writes, BCH_WRITE_REF_dio_write);

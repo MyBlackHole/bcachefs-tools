@@ -4,6 +4,7 @@
 #include "btree/bkey.h"
 #include "keylist.h"
 
+// 备注：重新分配 keys 
 int bch2_keylist_realloc(struct keylist *l, u64 *inline_u64s,
 			size_t nr_inline_u64s, size_t new_u64s)
 {

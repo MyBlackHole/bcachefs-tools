@@ -7,6 +7,7 @@
 int bch2_keylist_realloc(struct keylist *, u64 *, size_t, size_t);
 void bch2_keylist_pop_front(struct keylist *);
 
+// 备注：初始化 keys
 static inline void bch2_keylist_init(struct keylist *l, u64 *inline_keys)
 {
 	l->top_p = l->keys_p = inline_keys;
@@ -49,11 +50,13 @@ static inline struct bkey_i *bch2_keylist_front(struct keylist *l)
 	return l->keys;
 }
 
+// 备注：迭代 keys
 #define for_each_keylist_key(_keylist, _k)			\
 	for (struct bkey_i *_k = (_keylist)->keys;		\
 	     _k != (_keylist)->top;				\
 	     _k = bkey_next(_k))
 
+// 备注：获取 keys 的总扇区大小
 static inline u64 keylist_sectors(struct keylist *keys)
 {
 	u64 ret = 0;

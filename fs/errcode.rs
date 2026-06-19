@@ -1,3 +1,17 @@
+// 备注：bcachefs 错误码封装
+//
+// 备注：BchError 包装了 bcachefs 的两层错误码系统：
+// 备注：  1. 标准 errno（1..2047）
+// 备注：  2. bcachefs 特有错误码（BCH_ERR_START=2048 起），
+// 备注：     通过父链关联到根 errno（如 EIO、ENOSPC）。
+//
+// 备注：关键函数：
+// 备注：  __bch2_err_matches(code, class)：检查错误码是否属于某个类别
+// 备注：  __bch2_err_class(code)：提取根 errno
+// 备注：  bch2_err_str(code)：获取静态错误描述字符串
+//
+// 备注：ret_to_result:  将 C 风格的负值返回码转为 Rust Result
+// 备注：errptr_to_result: 将 ERR_PTR 风格的指针转为 Rust Result
 use crate::c;
 use core::ffi::{c_int, CStr};
 use core::fmt;
@@ -12,6 +26,9 @@ include!(concat!(env!("OUT_DIR"), "/errcodes_gen.rs"));
 ///
 /// Unlike `bch_errcode` (a repr(u32) enum), this never creates an invalid
 /// enum discriminant from a raw errno value.
+// 备注：BchError 存储正数错误码（和内核风格一致），而 C 函数返回负数。
+// 备注：ret_to_result 负责把 -EIO → Err(BchError(5))。
+// 备注：matches() 支持错误码类别匹配：如 EIO 类下的所有子错误。
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct BchError(i32);
 
@@ -111,3 +128,4 @@ pub fn errptr_to_result_c<T>(p: *const T) -> Result<*const T, BchError> {
         Ok(p)
     }
 }
+

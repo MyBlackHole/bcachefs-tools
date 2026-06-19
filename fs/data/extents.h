@@ -25,6 +25,7 @@ struct btree_trans;
 })
 
 /* downcast, preserves const */
+// 备注：沮丧，保留 const
 #define to_entry(_entry)						\
 ({									\
 	BUILD_BUG_ON(!type_is(_entry, union bch_extent_crc *) &&	\
@@ -202,6 +203,7 @@ static inline bool crc_is_encoded(struct bch_extent_crc_unpacked crc)
 void bch2_extent_crc_unpacked_to_text(struct printbuf *, struct bch_extent_crc_unpacked *);
 
 /* bkey_ptrs: generically over any key type that has ptrs */
+// 备注：bkey_ptrs：一般在任何具有 ptr 的键类型上
 
 struct bkey_ptrs_c {
 	const union bch_extent_entry	*start;
@@ -501,12 +503,14 @@ static inline bool bkey_is_user_data(const struct bkey *k)
 		k->type == KEY_TYPE_reservation;
 }
 
+// 备注：检测是否内联数据
 static inline bool bkey_extent_is_inline_data(const struct bkey *k)
 {
 	return  k->type == KEY_TYPE_inline_data ||
 		k->type == KEY_TYPE_indirect_inline_data;
 }
 
+// 备注：内联数据值位置偏移量
 static inline unsigned bkey_inline_data_offset(const struct bkey *k)
 {
 	switch (k->type) {
@@ -524,6 +528,7 @@ static inline unsigned bkey_inline_data_bytes(const struct bkey *k)
 	return bkey_val_bytes(k) - bkey_inline_data_offset(k);
 }
 
+// 备注：值数据地址
 #define bkey_inline_data_p(_k)	(((void *) (_k).v) + bkey_inline_data_offset((_k).k))
 
 static inline bool bkey_extent_is_data(const struct bkey *k)
@@ -778,6 +783,8 @@ static inline void bch2_cut_back(struct bpos where, struct bkey_i *k)
  *
  * bkey_start_offset(k) will be preserved, modifies where the extent ends
  */
+// 备注：bch_key_resize - 调整@k的大小
+// 备注：bkey_start_offset(k) 将被保留，修改范围结束的位置
 static inline void bch2_key_resize(struct bkey *k, unsigned new_size)
 {
 	k->p.offset -= k->size;

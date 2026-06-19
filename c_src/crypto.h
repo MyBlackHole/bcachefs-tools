@@ -1,3 +1,16 @@
+// ============================================
+// 备注：加密操作 C API
+//
+// 备注：封裝用户空间密码学操作（read_passphrase, derive_passphrase, add_key 等）。
+// 备注：与 Rust 的 key.rs 配合使用：
+// 备注：  Rust 端：Passphrase 输入、ChaCha20 派生、keyctl 管理
+// 备注：  C 端：read_passphrase() 从终端读取口令（关闭 echo）
+//
+// 备注：密码学流程：
+// 备注：  1. read_passphrase() — 读取用户口令
+// 备注：  2. derive_passphrase() — scrypt + ChaCha20 密钥派生
+// 备注：  3. bch2_add_key() — 添加到内核 keyring
+// ============================================
 #ifndef _CRYPTO_H
 #define _CRYPTO_H
 

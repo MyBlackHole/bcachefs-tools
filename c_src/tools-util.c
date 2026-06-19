@@ -1,3 +1,21 @@
+// ============================================
+// 备注：用户空间工具函数实现
+//
+// 备注：实现了 tools-util.h 中声明的所有函数：
+// 备注：  die() — 错误终止
+// 备注：  bch2_install_fatal_signal_handlers() — 注册致命信号处理器
+// 备注：  vmprintf / mprintf — 格式化字符串分配
+// 备注：  read_file_str / read_file_u64 — sysfs 读取
+// 备注：  blkid_check — 设备签名检查
+// 备注：  ask_yn — 交互式 Y/N 确认
+// 备注：  crc32c — CRC32C 实现
+//
+// 备注：致命信号处理器流程：
+// 备注：  1. 打印信号名称
+// 备注：  2. 通过 bch2_prt_task_backtrace 打印统一 backtrace
+// 备注：     （libunwind + rustc-demangle + libdw 行信息）
+// 备注：  3. re-raise 信号（SA_RESETHAND 确保只执行一次）
+// ============================================
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fs.h>

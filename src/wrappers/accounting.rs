@@ -1,3 +1,16 @@
+// ============================================
+// 备注：记账查询 IOCTL 封装
+//
+// 备注：通过 BCH_IOCTL_QUERY_ACCOUNTING（_IOW(0xbc, 21)）从内核查询文件系统
+// 备注：的磁盘空间使用统计。返回的数据包含：
+// 备注：  - capacity：文件系统总容量
+// 备注：  - used：已使用空间
+// 备注：  - online_reserved：在线预留空间
+// 备注：  - entries：按类型细分的记账条目
+//
+// 备注：内核版本兼容性：BCH_IOCTL_QUERY_ACCOUNTING 是较晚加入的 IOCTL，
+// 备注：旧内核返回 ENOTTY。调用方需处理此情况。
+// ============================================
 use bch_bindgen::c;
 use bcachefs_kernel::metadata_version;
 
@@ -142,3 +155,4 @@ fn parse_accounting_entries(data: &[u8]) -> Vec<AccountingEntry> {
 
     entries
 }
+
