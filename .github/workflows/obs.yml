@@ -358,7 +358,7 @@ jobs:
         timeout-minutes: 1
         # if: github.event_name != 'pull_request'
         id: attestation
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: '${{ github.workspace }}/bcachefs-obs.sha256sums'
       - name: Push updated OBS Repo
