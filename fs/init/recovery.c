@@ -372,8 +372,12 @@ static int bch2_journal_replay_accounting_key(struct btree_trans *trans,
 	struct bkey u;
 	struct bkey_s_c old = bch2_btree_path_peek_slot(btree_iter_path(trans, &iter), &u);
 
-	/* Has this delta already been applied to the btree? */
-	if (bversion_cmp(old.k->bversion, bk->k.bversion) >= 0)
+	/*
+	 * A crash may leave both the durable btree update and the journal entry
+	 * that produced it.  The bversion is the persistent replay high-water
+	 * mark; k->overwritten is only an in-memory optimization.
+	 */
+	if (bch2_accounting_delta_is_applied(old.k->bversion, bk->k.bversion))
 		return 0;
 
 	struct bkey_i *new = bk;

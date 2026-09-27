@@ -292,14 +292,32 @@ static inline void bch2_accounting_mem_read(struct bch_fs *c, struct bpos p,
 	bch2_accounting_mem_read_locked(c, p, v, nr);
 }
 
+/*
+ * Accounting bversions are a persistent replay high-water mark.  The high
+ * bits come from the journal sequence number and the low 32 bits identify the
+ * update within that sequence.
+ *
+ * Keep the offset entirely in those low 32 bits.  Letting it carry into the
+ * sequence field could make distinct deltas compare equal or out of order and
+ * would break replay idempotency.
+ */
 static inline struct bversion journal_pos_to_bversion(struct journal_res *res, unsigned offset)
 {
 	EBUG_ON(!res->ref);
 
+	u64 journal_offset = (u64) res->offset + offset;
+	EBUG_ON(journal_offset > U32_MAX);
+
 	return (struct bversion) {
 		.hi = res->seq >> 32,
-		.lo = (res->seq << 32) | (res->offset + offset),
+		.lo = (res->seq << 32) | journal_offset,
 	};
+}
+
+static inline bool bch2_accounting_delta_is_applied(struct bversion persisted,
+						    struct bversion delta)
+{
+	return bversion_cmp(persisted, delta) >= 0;
 }
 
 static inline int bch2_accounting_trans_commit_hook(struct btree_trans *trans,

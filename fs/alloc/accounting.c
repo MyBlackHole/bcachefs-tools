@@ -1206,7 +1206,8 @@ int bch2_accounting_read(struct bch_fs *c)
 
 		while (jk < end &&
 		       __journal_key_cmp(c, BTREE_ID_accounting, 0, k.k->p, jk) == 0 &&
-		       bversion_cmp(journal_key_k(c, jk)->k.bversion, k.k->bversion) <= 0) {
+		       bch2_accounting_delta_is_applied(k.k->bversion,
+						       journal_key_k(c, jk)->k.bversion)) {
 			jk->overwritten = true;
 			jk++;
 		}

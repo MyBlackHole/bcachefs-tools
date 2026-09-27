@@ -49,3 +49,45 @@ more aggressive degraded modes only when the missing-data risk is understood.
 Whenever possible, make block-device images or hardware snapshots first. A
 superblock repair changes on-disk metadata, and a failed recovery attempt is
 much easier to debug when the original bytes are still available.
+
+
+Journal replay idempotency
+--------------------------
+
+Journal replay must tolerate a crash at every point between reading an entry,
+updating a btree node, writing that node, and finally releasing the journal pin.
+The durable journal entry can therefore coexist with a btree update that was
+already written before the crash.
+
+For ordinary btree keys, replay installs the recorded key with triggers disabled
+(``BTREE_TRIGGER_norun``).  Reinstalling the same final key is logically
+idempotent, and disabling triggers prevents replay from regenerating accounting
+or other derived side effects.  The original journal sequence remains pinned
+until the btree write that depends on it is durable.
+
+Accounting keys need a stronger rule because they are deltas rather than
+replacement values.  Every accounting delta receives a monotonically ordered
+``bversion`` derived from its journal sequence and reservation offset.  The
+accounting btree stores the newest applied version as a persistent high-water
+mark.  Recovery applies a delta only when its version is newer than the
+persisted version.
+
+This gives the important crash cases:
+
+* If the btree update was not durable, its old version is still visible and the
+  delta is applied during replay.
+* If the btree update was durable but its journal entry is still present, the
+  persisted version is at least the delta version and replay skips it.
+* Once the journal pin is released, reclaim may discard the source journal
+  entry because the corresponding btree state is already durable.
+
+The write buffer preserves the high-water-mark invariant for repeated updates
+to one accounting position.  Same-position deltas are coalesced before flush,
+their values are accumulated, the maximum ``bversion`` is retained, and the
+earliest required journal sequence stays pinned.  Thus a persisted accounting
+version represents a contiguous prefix of the deltas for that position.
+
+The in-memory ``journal_key.overwritten`` flag is not part of this correctness
+argument: it can disappear in a crash.  It only avoids redundant work within
+one recovery run.  Cross-crash idempotency comes from the persisted btree
+version and journal-pin ordering.
