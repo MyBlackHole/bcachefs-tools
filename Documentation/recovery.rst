@@ -97,17 +97,21 @@ Extent ordering
 
 The fast replay pass walks journal keys in btree/position order instead of
 journal order.  This is safe for extent btrees even though range updates do
-not generally commute.  The original extent transaction converts a range
-overwrite into point-addressed final-state updates: for every old extent it
-overwrites, it emits a replacement at that extent's original end ``bpos``.
-A complete overwrite emits a deletion or whiteout there; a partial overwrite
-that preserves the tail emits the right-hand fragment with the same end
-``bpos``.  Front and middle fragments only add new positions.
+not generally commute.  For same-snapshot overwrites, the original extent
+transaction converts a range overwrite into point-addressed final-state
+updates: every old extent that is superseded gets a replacement at its
+original end ``bpos``.  A complete overwrite emits a deletion or whiteout
+there; a partial overwrite that preserves the tail emits the right-hand
+fragment with the same end ``bpos``.  Front and middle fragments only add new
+positions.
 
-Consequently, when journal keys are sorted, exact-position deduplication
-removes stale versions of every overwritten extent before replay.  The
-remaining key set describes the final non-overlapping extent layout, so its
-position-ordered replay is independent of the original transaction order.
+Cross-snapshot overwrites do not invalidate the ancestor key: ancestor and
+child are distinct ``bpos`` values because the snapshot id is part of the
+position, and snapshot visibility makes the child shadow the ancestor.
+Consequently, exact-position deduplication removes stale same-snapshot extent
+versions while retaining intentionally distinct snapshot versions.  The
+remaining key set describes the final visible extent state, so position-ordered
+replay does not depend on stale overwritten versions.
 
 Early replay entries
 ~~~~~~~~~~~~~~~~~~~~

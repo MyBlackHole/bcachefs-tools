@@ -185,11 +185,15 @@ int bch2_trans_update_extent_overwrite(struct btree_trans *trans,
 
 	/*
 	 * Journal replay deduplicates ordinary keys by exact bpos, not by range
-	 * overlap. Preserve that invariant here: every overwritten extent must
-	 * queue a replacement at old.k->p. With no back split that replacement
-	 * is a deletion/whiteout; with a back split it is the surviving right
-	 * fragment, whose end position remains old.k->p. Front/middle fragments
-	 * are additional positions.
+	 * overlap. Preserve that invariant for same-snapshot overwrites: every
+	 * old extent that is superseded must queue a replacement at old.k->p.
+	 * With no back split that is a deletion/whiteout; with a back split it
+	 * is the surviving right fragment, whose end remains old.k->p.
+	 *
+	 * Cross-snapshot overwrites are different: the ancestor key remains a
+	 * distinct key and the child snapshot shadows it, so exact-position
+	 * dedup must not discard the ancestor. Front/middle fragments are also
+	 * additional positions.
 	 */
 
 	/*
