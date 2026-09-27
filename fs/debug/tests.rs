@@ -315,9 +315,52 @@ fn insert_test_extent(fs: &Fs, start: u64, end: u64) -> TestRet {
     insert_cookie(fs, c::btree_id::extents, &mut k)
 }
 
+fn assert_test_extents(fs: &Fs, expected: &[(u64, u64)]) -> TestRet {
+    let trans = BtreeTrans::new(fs);
+    let mut iter = BtreeIter::new(
+        &trans,
+        c::btree_id::extents,
+        spos(0, 0, u32::MAX),
+        BtreeIterFlags::empty(),
+    );
+    let mut i = 0;
+
+    iter.for_each_max(&trans, pos(0, u64::MAX), |k| {
+        assert!(i < expected.len());
+        assert_eq!(k.k.start_offset(), expected[i].0);
+        assert_eq!(k.k.p.offset, expected[i].1);
+        i += 1;
+        ControlFlow::Continue(())
+    })?;
+
+    assert_eq!(i, expected.len());
+    Ok(())
+}
+
 fn __test_extent_overwrite(fs: &Fs, e1_start: u64, e1_end: u64, e2_start: u64, e2_end: u64) -> TestRet {
+    delete_test_keys(fs)?;
     insert_test_extent(fs, e1_start, e1_end)?;
     insert_test_extent(fs, e2_start, e2_end)?;
+
+    let mut expected = [(0, 0); 3];
+    let mut nr_expected = 0;
+
+    let left_end = e1_end.min(e2_start);
+    if e1_start < left_end {
+        expected[nr_expected] = (e1_start, left_end);
+        nr_expected += 1;
+    }
+
+    expected[nr_expected] = (e2_start, e2_end);
+    nr_expected += 1;
+
+    let right_start = e1_start.max(e2_end);
+    if right_start < e1_end {
+        expected[nr_expected] = (right_start, e1_end);
+        nr_expected += 1;
+    }
+
+    assert_test_extents(fs, &expected[..nr_expected])?;
     delete_test_keys(fs)
 }
 
@@ -340,6 +383,24 @@ fn test_extent_overwrite_all(fs: &Fs, _nr: u64) -> TestRet {
     __test_extent_overwrite(fs, 32, 64,  0, 128)?;
     __test_extent_overwrite(fs, 32, 64, 32,  64)?;
     __test_extent_overwrite(fs, 32, 64, 32, 128)
+}
+
+/*
+ * Journal replay sorts and deduplicates ordinary keys by bpos. Exercise the
+ * extent-update normalization that makes that safe across multiple
+ * transactions: the final broad overwrite must eliminate the intermediate
+ * endpoints introduced by the two narrower overwrites.
+ */
+fn test_extent_overwrite_normalization(fs: &Fs, _nr: u64) -> TestRet {
+    delete_test_keys(fs)?;
+
+    insert_test_extent(fs, 0, 100)?;
+    insert_test_extent(fs, 20, 30)?;
+    insert_test_extent(fs, 40, 50)?;
+    insert_test_extent(fs, 10, 60)?;
+
+    assert_test_extents(fs, &[(0, 10), (10, 60), (60, 100)])?;
+    delete_test_keys(fs)
 }
 
 fn insert_test_overlapping_extent(fs: &Fs, inum: u64, start: u64, len: u32, snapid: u32) -> TestRet {
@@ -720,6 +781,7 @@ fn lookup_test(testname: &CStr) -> Option<(&'static [u8], TestFn)> {
         (b"test_extent_overwrite_back", test_extent_overwrite_back),
         (b"test_extent_overwrite_middle", test_extent_overwrite_middle),
         (b"test_extent_overwrite_all", test_extent_overwrite_all),
+        (b"test_extent_overwrite_normalization", test_extent_overwrite_normalization),
         (b"test_extent_create_overlapping", test_extent_create_overlapping),
         (b"test_extent_create_dup", test_extent_create_dup),
         (b"test_btree_ptr_stale_dirty", test_btree_ptr_stale_dirty),
