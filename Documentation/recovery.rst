@@ -91,3 +91,31 @@ The in-memory ``journal_key.overwritten`` flag is not part of this correctness
 argument: it can disappear in a crash.  It only avoids redundant work within
 one recovery run.  Cross-crash idempotency comes from the persisted btree
 version and journal-pin ordering.
+
+Extent ordering
+~~~~~~~~~~~~~~~
+
+The fast replay pass walks journal keys in btree/position order instead of
+journal order.  This is safe for extent btrees even though range updates do
+not generally commute.  The original extent transaction converts a range
+overwrite into point-addressed final-state updates: for every old extent it
+overwrites, it emits a replacement at that extent's original end ``bpos``.
+A complete overwrite emits a deletion or whiteout there; a partial overwrite
+that preserves the tail emits the right-hand fragment with the same end
+``bpos``.  Front and middle fragments only add new positions.
+
+Consequently, when journal keys are sorted, exact-position deduplication
+removes stale versions of every overwritten extent before replay.  The
+remaining key set describes the final non-overlapping extent layout, so its
+position-ordered replay is independent of the original transaction order.
+
+Early replay entries
+~~~~~~~~~~~~~~~~~~~~
+
+Entries handled before the btrees start also need repeatable semantics.
+Btree-root, key-version usage, and I/O-clock entries replace in-memory state;
+because journal entries are walked in sequence order, the newest surviving
+value wins.  Journal blacklist entries are set-like: adding the same or an
+overlapping range merges with the existing superblock range.  Repeating early
+replay after a crash therefore converges on the same state rather than
+accumulating a second side effect.

@@ -657,6 +657,12 @@ static int journal_replay_entry_early(struct bch_fs *c,
 {
 	int ret = 0;
 
+	/*
+	 * A crash may cause these entries to be replayed again. Keep handlers
+	 * idempotent: root/usage/clock entries replace in-memory state, while
+	 * blacklist replay adds to a set of ranges (the add path merges
+	 * duplicates and overlaps).
+	 */
 	switch (entry->type) {
 	case BCH_JSET_ENTRY_btree_root: {
 

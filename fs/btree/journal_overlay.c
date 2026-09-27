@@ -801,6 +801,13 @@ static void __journal_keys_sort(struct journal_keys *keys)
 
 	darray_for_each(*keys, src) {
 		/*
+		 * Exact-position dedup is sufficient for extent btrees too:
+		 * bch2_trans_update_extent_overwrite() always emits a
+		 * replacement at the overwritten extent's original end bpos.
+		 * Thus a later range overwrite supersedes every older extent it
+		 * covers at that older extent's own sort position; split
+		 * fragments merely add new positions.
+		 *
 		 * We don't accumulate accounting keys here because we have to
 		 * compare each individual accounting key against the version in
 		 * the btree during replay:

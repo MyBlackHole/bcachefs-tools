@@ -184,6 +184,15 @@ int bch2_trans_update_extent_overwrite(struct btree_trans *trans,
 	int ret = 0, compressed_sectors;
 
 	/*
+	 * Journal replay deduplicates ordinary keys by exact bpos, not by range
+	 * overlap. Preserve that invariant here: every overwritten extent must
+	 * queue a replacement at old.k->p. With no back split that replacement
+	 * is a deletion/whiteout; with a back split it is the surviving right
+	 * fragment, whose end position remains old.k->p. Front/middle fragments
+	 * are additional positions.
+	 */
+
+	/*
 	 * If we're going to be splitting a compressed extent, note it
 	 * so that __bch2_trans_commit() can increase our disk
 	 * reservation:
